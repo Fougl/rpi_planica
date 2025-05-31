@@ -1,0 +1,9 @@
+#!/bin/bash
+
+while true; do
+	
+	sudo python3 /home/pi/Desktop/scan_new.py
+	
+	#/home/pi/Desktop/test5
+	sleep 10
+done

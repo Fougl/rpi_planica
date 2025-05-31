@@ -1,0 +1,43 @@
+#!/usr/bin/expect -f
+
+set prompt "#"
+set f [open "/home/pi/Desktop/res_new.txt"]
+set cams [split [read $f] "\n"]
+close $f
+
+foreach cam $cams {
+	
+	#expect -re $prompt
+	set count 1
+	while {$count<=20} {
+		incr count
+		spawn timeout 5 gatttool -t random -b "$cam" --char-write-req -a 0x2f -n 03170101
+		set timestamp [exec /bin/date "+%Y-%m-%d %H:%M:%S"]
+		puts "Attempted to write to $cam at $timestamp"
+
+
+		set timeout 5
+		#expect "Characteristic value was written successfully" {set count 0;}
+		expect "Characteristic value was written successfully" {
+        		puts "Success after $count attempts!"
+        		break
+    		}
+		#expect "Connection successful" {set count 0;}
+		wait
+	}	
+	#expect -re $prompt
+	#send "char-write-req 2f 03170101\r"
+	#wait
+	}
+
+
+
+expect eof
+#E7:5C:2C:64:3C:1C
+#EF:BE:79:67:78:46
+#F3:F6:B0:75:90:61
+#F4:8F:F7:98:81:3A
+
+
+
+

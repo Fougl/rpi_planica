@@ -1,0 +1,14 @@
+1 sudo gatttool -t random -b EF:B5:3D:11:F4:31 --char-write-req -a 0x2f -n 03170101
+2 sudo gatttool -t random -b D5:ED:26:D6:C2:3B --char-write-req -a 0x2f -n 03170101
+3 sudo gatttool -t random -b DD:30:F0:C9:83:F0 --char-write-req -a 0x2f -n 03170101
+4 sudo gatttool -t random -b E7:5C:2C:64:3C:1C --char-write-req -a 0x2f -n 03170101
+5 sudo gatttool -t random -b FF:30:3A:EB:6B:D3 --char-write-req -a 0x2f -n 03170101
+6 sudo gatttool -t random -b EF:BE:79:67:78:46 --char-write-req -a 0x2f -n 03170101
+7 sudo gatttool -t random -b F4:8F:F7:98:81:3A --char-write-req -a 0x2f -n 03170101
+8 sudo gatttool -t random -b F3:F6:B0:75:90:61 --char-write-req -a 0x2f -n 03170101
+9 sudo gatttool -t random -b EE:D5:4D:88:77:FF --char-write-req -a 0x2f -n 03170101
+10 sudo gatttool -t random -b EC:0C:E7:74:38:FC --char-write-req -a 0x2f -n 03170101
+11 sudo gatttool -t random -b EE:EA:A6:26:99:7E --char-write-req -a 0x2f -n 03170101
+12 sudo gatttool -t random -b E7:95:BE:D1:C6:61 --char-write-req -a 0x2f -n 03170101
+13 sudo gatttool -t random -b CC:0B:1A:FD:8B:B6 --char-write-req -a 0x2f -n 03170101
+14 sudo gatttool -t random -b FC:8B:BA:54:66:D1 --char-write-req -a 0x2f -n 03170101
