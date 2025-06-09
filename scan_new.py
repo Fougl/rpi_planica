@@ -108,15 +108,15 @@ if res_new:
         yday = datetime.now() - timedelta(days=1)
         return yday.strftime("%m/%d/%Y, %H:%M:%S")
 
-    def send_failure_email(mac_address):
+    def send_failure_email(gopro):
         msg = EmailMessage()
         msg["From"] = EMAIL_FROM
         msg["To"] = EMAIL_TO
         
-        msg["Subject"] = "GATT write failed 5 times for {}".format(mac_address)
+        msg["Subject"] = "GATT write failed 5 times for {}".format(gopro)
         # Replace f-string with .format()
         msg.set_content("All 5 attempts to write to camera {} failed at {}.".format(
-            mac_address,
+            gopro,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
 
@@ -124,9 +124,9 @@ if res_new:
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
                 server.login(EMAIL_FROM, SMTP_PASS)
                 server.send_message(msg)
-            logging.info("Sent failure email for %s", mac_address)
+            logging.info("Sent failure email for %s", gopro)
         except Exception as e:
-            logging.error("Failed to send email for %s: %s", mac_address, e)
+            logging.error("Failed to send email for %s: %s", gopro, e)
 
     for mac_upper in res_new:
         mac = mac_upper.lower()
@@ -162,13 +162,26 @@ if res_new:
                 success = True
                 break
             else:
-                logging.info("No success on attempt %d for %s, output: %s", attempt, mac, output.strip())
+                logging.info(
+                    "No success on attempt %d for %s, output: %s",
+                    attempt, mac, output.strip()
+                )
+                # Force a disconnect before the next retry
+                try:
+                    subprocess.run(
+                        ["bluetoothctl", "disconnect", mac],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False
+                    )
+                except Exception as e:
+                    logging.warning("Failed to run bluetoothctl disconnect: %s", e)
 
         if not success:
             ystamp = get_yesterday_stamp()
             logging.warning("All 5 attempts failed for %s, setting time[%d] to %s", mac, idx, ystamp)
             time[idx] = ystamp
-            send_failure_email(mac_upper)
+            send_failure_email(idx+1)
 
             with time_file.open("w") as f:
                 f.write("\n".join(time))
