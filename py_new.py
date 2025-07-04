@@ -2,13 +2,14 @@ from multiprocessing import Process, Manager
 from datetime import datetime, timedelta
 import time
 import subprocess
-from bluepy.btle import Scanner
 import logging
 from pathlib import Path
 import smtplib
 from email.message import EmailMessage
+from collections import defaultdict
+from bluepy.btle import Scanner
 
-# Setup logging
+# === Setup Logging ===
 log_file = Path("/home/pi/Desktop/new_log.log")
 logging.basicConfig(
     filename=str(log_file),
@@ -16,14 +17,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# Email config
+# === Email Configuration ===
 EMAIL_FROM = "planica.zipline@gmail.com"
 EMAIL_TO = "planica.zipline@gmail.com"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 SMTP_PASS = "bjrwefqlgikznpfm"
 
-# Known MACs
+# === Known Camera MACs ===
 KNOWN_CAMERAS = [
     'fb:9a:49:68:6b:f2', 'd5:ed:26:d6:c2:3b', 'dd:30:f0:c9:83:f0', 'e7:5c:2c:64:3c:1c',
     'ff:30:3a:eb:6b:d3', 'ef:be:79:67:78:46', 'f4:8f:f7:98:81:3a', 'f3:f6:b0:75:90:61',
@@ -32,17 +33,15 @@ KNOWN_CAMERAS = [
 ]
 KNOWN_CAMERAS = [x.lower() for x in KNOWN_CAMERAS]
 CAMERA_MAP = {mac: i + 1 for i, mac in enumerate(KNOWN_CAMERAS)}
-camera_state = {}
 
+# === Email Failure Alert ===
 def send_failure_email(camera_number):
     msg = EmailMessage()
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
     msg["Subject"] = "GATT write failed 5 times for Camera {}".format(camera_number)
     msg.set_content("All 5 attempts to write to camera {} failed at {}.".format(
-        camera_number,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
+        camera_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
     try:
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
@@ -52,109 +51,118 @@ def send_failure_email(camera_number):
     except Exception as e:
         logging.error("Failed to send email for camera {}: {}".format(camera_number, e))
 
-def run_gatttool(mac):
+# === GATT Execution ===
+def run_gatttool(mac, macs_to_process):
     cam_num = CAMERA_MAP.get(mac, mac)
     logging.info("Running gatttool for Camera {} ({})".format(cam_num, mac))
-    success = False
 
-    for attempt in range(1, 6):
-        cmd = [
-            "timeout", "--foreground", "5",
-            "gatttool", "-t", "random", "-b", mac,
-            "--char-write-req", "-a", "0x2f", "-n", "03170101"
-        ]
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            out_bytes, _ = proc.communicate()
-            output = out_bytes.decode("utf-8", "ignore")
-        except Exception as e:
-            logging.error("Exception calling gatttool for {}: {}".format(mac, e))
-            output = ""
+    cmd = [
+        "timeout", "--foreground", "5",
+        "gatttool", "-t", "random", "-b", mac,
+        "--char-write-req", "-a", "0x2f", "-n", "03170101"
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out_bytes, _ = proc.communicate()
+        output = out_bytes.decode("utf-8", "ignore")
+    except Exception as e:
+        logging.error("Exception calling gatttool for {}: {}".format(mac, e))
+        output = ""
 
-        if "Characteristic value was written successfully" in output:
-            logging.info("Success on attempt {} for {}".format(attempt, mac))
-            success = True
-        else:
-            logging.info("No success on attempt {} for {}, output: {}".format(attempt, mac, output.strip()))
-        
-        # Always disconnect
-        try:
-            subprocess.run(["bluetoothctl", "disconnect", mac],
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL,
-                           timeout=5,
-                           check=False)
-        except Exception as e:
-            logging.info("Failed to run bluetoothctl disconnect: {}".format(e))
-        logging.info("Finished bluetoothctl disconnect for {}".format(mac))
-
-        if success:
-            break
-
-    if not success:
-        logging.warning("All 5 attempts failed for Camera {} ({})".format(cam_num, mac))
-        send_failure_email(cam_num)
-        return 0
+    success = "Characteristic value was written successfully" in output
+    if success:
+        logging.info("Success for {}".format(mac))
+        if mac in macs_to_process:
+            del macs_to_process[mac]
     else:
-        return 1
+        logging.info("Failed for {}, output: {}".format(mac, output.strip()))
 
-def scanner_loop(shared_scan_results):
+    try:
+        subprocess.run(["bluetoothctl", "disconnect", mac],
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL,
+                       timeout=1,
+                       check=False)
+    except Exception as e:
+        logging.info("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
+    logging.info("Finished bluetoothctl disconnect for {}".format(mac))
+
+# === Scanner Process ===
+def scanner_loop(macs_to_process):
     scanner = Scanner()
+    last_seen = {}
+    first_rssi = {}
+    rssi_state = {}
+    absence_time = {}
+
     while True:
         try:
-            devices = scanner.scan(2)
-            shared_scan_results.clear()
+            devices = scanner.scan(1)
+            now = datetime.now()
+
             for dev in devices:
-                shared_scan_results[dev.addr.lower()] = dev.rssi
+                mac = dev.addr.lower()
+                if mac not in KNOWN_CAMERAS:
+                    continue
+
+                rssi = dev.rssi
+                cam_num = CAMERA_MAP.get(mac, mac)
+                prev = last_seen.get(mac)
+
+                if prev and (now - prev) > timedelta(minutes=1) and mac in macs_to_process:
+                    del macs_to_process[mac]
+
+                if prev is None or (now - prev) > timedelta(minutes=10) or rssi_state.get(mac) == 'weak':
+                    if mac not in first_rssi:
+                        first_rssi[mac] = rssi
+                        absence_time[mac] = now
+                        if rssi >= -70:
+                            logging.info("Camera {} ({}) was absent >10min, returned STRONG (RSSI={})".format(cam_num, mac, rssi))
+                            rssi_state[mac] = 'strong'
+                        else:
+                            logging.info("Camera {} ({}) was absent >10min, returned WEAK (RSSI={})".format(cam_num, mac, rssi))
+                            rssi_state[mac] = 'weak'
+                    elif rssi_state.get(mac) == 'weak' and rssi >= -70:
+                        logging.info("Camera {} ({}) was WEAK after absence, now STRONG — trigger (RSSI={})".format(cam_num, mac, rssi))
+                        macs_to_process[mac] = 1
+                        rssi_state[mac] = 'strong'
+                else:
+                    if mac in first_rssi:
+                        del first_rssi[mac]
+                        absence_time[mac] = None
+
+                last_seen[mac] = now
         except Exception as e:
             logging.warning("Scan failed: {}".format(e))
-        time.sleep(2)
 
+# === Main Controller ===
 if __name__ == '__main__':
-    logging.info("Script start")
-    with Manager() as manager:
-        scan_results = manager.dict()
-        scanner_proc = Process(target=scanner_loop, args=(scan_results,))
-        scanner_proc.start()
+    logging.info("Script started.")
+    manager = Manager()
+    macs_to_process = manager.dict()  # ← simulate set with dict keys
+    attempt_counter = defaultdict(int)
 
-        try:
-            while True:
-                now = datetime.now()
-                detected = {
-                    mac: rssi for mac, rssi in scan_results.items()
-                    if mac in KNOWN_CAMERAS
-                }
+    scanner_proc = Process(target=scanner_loop, args=(macs_to_process,))
+    scanner_proc.start()
 
-                for mac, rssi in detected.items():
+    try:
+        while True:
+            for mac in list(macs_to_process.keys()):
+                if attempt_counter[mac] >= 5:
                     cam_num = CAMERA_MAP.get(mac, mac)
-                    state = camera_state.get(mac, {
-                        'last_seen': None,
-                        'seen_weak_after_absence': False,
-                        'gatt_triggered': False
-                    })
+                    logging.warning("Camera {} ({}) failed 5 times. Skipping.".format(cam_num, mac))
+                    send_failure_email(cam_num)
+                    if mac in macs_to_process:
+                        del macs_to_process[mac]
+                    continue
 
-                    if state['last_seen'] is None or (now - state['last_seen']) > timedelta(minutes=10):
-                        state['seen_weak_after_absence'] = False
-                        state['gatt_triggered'] = False
-                        logging.info("Camera {} ({}) was absent >10 minutes — resetting event tracking.".format(cam_num, mac))
+                attempt_counter[mac] += 1
+                Process(target=run_gatttool, args=(mac, macs_to_process)).start()
+                time.sleep(1.5)
 
-                    if rssi < -70 and not state['seen_weak_after_absence'] and not state['gatt_triggered']:
-                        state['seen_weak_after_absence'] = True
-                        logging.info("Camera {} ({}) detected weak after absence (RSSI={})".format(cam_num, mac, rssi))
-
-                    elif rssi >= -70 and state['seen_weak_after_absence'] and not state['gatt_triggered']:
-                        logging.info("Camera {} ({}) improved signal — triggering GATT (RSSI={})".format(cam_num, mac, rssi))
-                        if run_gatttool(mac):
-                            state['gatt_triggered'] = True
-
-                    elif not state['last_seen'] or (now - state['last_seen']) > timedelta(minutes=10):
-                        state['gatt_triggered'] = True
-                        logging.info("Camera {} ({}) appeared with RSSI {}".format(cam_num, mac, rssi))
-
-                    state['last_seen'] = now
-                    camera_state[mac] = state
-
-                time.sleep(5)
-        finally:
-            scanner_proc.terminate()
-            scanner_proc.join()
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user")
+    finally:
+        scanner_proc.terminate()
+        scanner_proc.join()
+        logging.info("Scanner process terminated")
