@@ -1,0 +1,21 @@
+sudo tee /etc/systemd/system/py_new.service > /dev/null <<EOF
+[Unit]
+Description=Scan Gopro Service
+After=network.target bluetooth.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/Desktop
+ExecStart=/usr/bin/python3 /home/pi/Desktop/py_new.py
+Restart=always
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable py_new.service
+sudo systemctl start py_new.service
