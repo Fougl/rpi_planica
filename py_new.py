@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from multiprocessing import Process, Manager
 from datetime import datetime, timedelta
 import time
@@ -6,8 +7,49 @@ import logging
 from pathlib import Path
 import smtplib
 from email.message import EmailMessage
-from collections import defaultdict
 from bluepy.btle import Scanner
+import pexpect
+import sys
+
+# === GoPro BLE Busy Query ===
+class StdoutLogger(object):
+    def write(self, data):
+        sys.stdout.write(data.decode('utf-8', errors='ignore'))
+        sys.stdout.flush()
+    def flush(self):
+        pass
+
+def query_gopro_busy(mac):
+    child = pexpect.spawn("gatttool -t random -b {} -I".format(mac), timeout=15)
+    child.logfile = StdoutLogger()
+
+    try:
+        child.expect(r'\[LE\]>')
+        child.sendline("connect")
+        child.expect("Connection successful", timeout=5)
+
+        child.sendline("char-write-req 0x0039 021308")
+        child.expect("Characteristic value was written successfully", timeout=3)
+        child.expect(r'\[LE\]>')
+
+        child.sendline("char-write-cmd 0x003c 0100")
+        child.expect(r'\[LE\]>')
+
+        child.sendline("char-write-req 0x0039 021308")
+        child.expect("Characteristic value was written successfully", timeout=3)
+        time.sleep(0.5)
+
+        try:
+            child.expect("value:", timeout=10)
+            output = child.before.decode() + child.after.decode() + child.read(20).decode()
+            logging.info("Raw notification received from {}:\n{}".format(mac, output.strip()))
+        except pexpect.TIMEOUT:
+            logging.warning("No notification received from {} (timeout).".format(mac))
+    except Exception as e:
+        logging.error("Error in query_gopro_busy for {}: {}".format(mac, e))
+    finally:
+        child.sendline("exit")
+        child.close()
 
 # === Setup Logging ===
 log_file = Path("/home/pi/Desktop/new_log.log")
@@ -40,8 +82,12 @@ def send_failure_email(camera_number):
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
     msg["Subject"] = "GATT write failed 5 times for Camera {}".format(camera_number)
-    msg.set_content("All 5 attempts to write to camera {} failed at {}.".format(
-        camera_number, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    msg.set_content(
+        "All 5 attempts to write to camera {} failed at {}.".format(
+            camera_number,
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        )
+    )
 
     try:
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
@@ -52,12 +98,12 @@ def send_failure_email(camera_number):
         logging.error("Failed to send email for camera {}: {}".format(camera_number, e))
 
 # === GATT Execution ===
-def run_gatttool(mac, macs_to_process):
+def run_gatttool(mac, macs_to_process, attempt_counter):
     cam_num = CAMERA_MAP.get(mac, mac)
     logging.info("Running gatttool for Camera {} ({})".format(cam_num, mac))
 
     cmd = [
-        "timeout", "--foreground", "5",
+        "timeout", "--foreground", "3",
         "gatttool", "-t", "random", "-b", mac,
         "--char-write-req", "-a", "0x2f", "-n", "03170101"
     ]
@@ -72,6 +118,7 @@ def run_gatttool(mac, macs_to_process):
     success = "Characteristic value was written successfully" in output
     if success:
         logging.info("Success for {}".format(mac))
+        attempt_counter[mac] = 0
         if mac in macs_to_process:
             del macs_to_process[mac]
     else:
@@ -99,6 +146,12 @@ def scanner_loop(macs_to_process):
         try:
             devices = scanner.scan(1)
             now = datetime.now()
+            
+            for mac in list(macs_to_process.keys()):
+                prev = last_seen.get(mac)
+                if prev and (now - prev) > timedelta(minutes=1):
+                    del macs_to_process[mac]
+                    logging.info("Removed {} from macs_to_process due to timeout".format(mac))
 
             for dev in devices:
                 mac = dev.addr.lower()
@@ -139,8 +192,8 @@ def scanner_loop(macs_to_process):
 if __name__ == '__main__':
     logging.info("Script started.")
     manager = Manager()
-    macs_to_process = manager.dict()  # ← simulate set with dict keys
-    attempt_counter = defaultdict(int)
+    macs_to_process = manager.dict()
+    attempt_counter = manager.dict()
 
     scanner_proc = Process(target=scanner_loop, args=(macs_to_process,))
     scanner_proc.start()
@@ -148,16 +201,16 @@ if __name__ == '__main__':
     try:
         while True:
             for mac in list(macs_to_process.keys()):
-                if attempt_counter[mac] >= 5:
+                if attempt_counter.get(mac, 0) >= 5:
                     cam_num = CAMERA_MAP.get(mac, mac)
                     logging.warning("Camera {} ({}) failed 5 times. Skipping.".format(cam_num, mac))
                     send_failure_email(cam_num)
-                    if mac in macs_to_process:
-                        del macs_to_process[mac]
+                    attempt_counter[mac] = 0
                     continue
 
-                attempt_counter[mac] += 1
-                Process(target=run_gatttool, args=(mac, macs_to_process)).start()
+                attempt_counter[mac] = attempt_counter.get(mac, 0) + 1
+                #Process(target=run_gatttool, args=(mac, macs_to_process, attempt_counter)).start()
+                run_gatttool(mac, macs_to_process, attempt_counter)
                 time.sleep(1.5)
 
     except KeyboardInterrupt:
