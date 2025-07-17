@@ -100,6 +100,8 @@ def send_failure_email(camera_number):
 # === GATT Execution ===
 def run_gatttool(mac, macs_to_process, attempt_counter):
     cam_num = CAMERA_MAP.get(mac, mac)
+    if attempt_counter[mac]==1:
+        logging.info(u"🚀🚀🚀🚀🚀 START GATTTOOL FOR CAMERA {} ({}) 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀".format(cam_num, mac))
     logging.info("Running gatttool for Camera {} ({})".format(cam_num, mac))
 
     cmd = [
@@ -117,7 +119,7 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
 
     success = "Characteristic value was written successfully" in output
     if success:
-        logging.info("Success for {}".format(mac))
+        logging.info(u"🥇🥇🥇🥇🥇🥇SUCCESS FOR CAMERA{} 🥇🥇🥇🥇🥇🥇🥇🥇🥇🥇🥇🥇".format(cam_num))
         attempt_counter[mac] = 0
         if mac in macs_to_process:
             del macs_to_process[mac]
@@ -131,7 +133,7 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
                        timeout=1,
                        check=False)
     except Exception as e:
-        logging.info("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
+        logging.error("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
 # === Scanner Process ===
@@ -150,8 +152,9 @@ def scanner_loop(macs_to_process):
             for mac in list(macs_to_process.keys()):
                 prev = last_seen.get(mac)
                 if prev and (now - prev) > timedelta(minutes=1):
+                    cam_num = CAMERA_MAP.get(mac, mac)
                     del macs_to_process[mac]
-                    logging.info("Removed {} from macs_to_process due to timeout".format(mac))
+                    logging.info(u"🗑️🗑️🗑️🗑️REMOVED - CAMERA {} NOT VISIBLE FOR SOME TIME.".format(cam_num))
 
             for dev in devices:
                 mac = dev.addr.lower()
@@ -190,7 +193,7 @@ def scanner_loop(macs_to_process):
 
 # === Main Controller ===
 if __name__ == '__main__':
-    logging.info("Script started.")
+    logging.info(u"▶▶▶▶▶▶▶▶Script started.▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶")
     manager = Manager()
     macs_to_process = manager.dict()
     attempt_counter = manager.dict()
@@ -203,7 +206,7 @@ if __name__ == '__main__':
             for mac in list(macs_to_process.keys()):
                 if attempt_counter.get(mac, 0) >= 5:
                     cam_num = CAMERA_MAP.get(mac, mac)
-                    logging.warning("Camera {} ({}) failed 5 times. Skipping.".format(cam_num, mac))
+                    logging.warning(u"❌❌❌❌❌CAMERA {} ({}) FAILED 5 TIMES.❌❌❌❌❌❌❌❌❌❌".format(cam_num, mac))
                     send_failure_email(cam_num)
                     attempt_counter[mac] = 0
                     continue
