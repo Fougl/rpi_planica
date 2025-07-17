@@ -52,12 +52,32 @@ def query_gopro_busy(mac):
         child.close()
 
 # === Setup Logging ===
+# log_file = Path("/home/pi/Desktop/new_log.log")
+# logging.basicConfig(
+#     filename=str(log_file),
+#     level=logging.INFO,
+#     format="%(asctime)s [%(levelname)s] %(message)s"
+# )
+
 log_file = Path("/home/pi/Desktop/new_log.log")
-logging.basicConfig(
-    filename=str(log_file),
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+
+# Create file handler with UTF-8 encoding manually
+file_handler = logging.FileHandler(str(log_file), mode='a', encoding='utf-8')
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s"
+))
+
+# Setup logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+
+# Optional: also log to console (UTF-8 capable terminal)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s"
+))
+logger.addHandler(console_handler)
 
 # === Email Configuration ===
 EMAIL_FROM = "planica.zipline@gmail.com"
