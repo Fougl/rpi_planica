@@ -157,7 +157,7 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
 # === Scanner Process ===
-def scanner_loop(macs_to_process):
+def scanner_loop(macs_to_process, attempt_counter):
     scanner = Scanner()
     last_seen = {}
     first_rssi = {}
@@ -174,6 +174,7 @@ def scanner_loop(macs_to_process):
                 if prev and (now - prev) > timedelta(minutes=1):
                     cam_num = CAMERA_MAP.get(mac, mac)
                     del macs_to_process[mac]
+                    attempt_counter[mac] = 0
                     logging.info(u"🗑️🗑️🗑️🗑️REMOVED - CAMERA {} NOT VISIBLE FOR SOME TIME.".format(cam_num))
 
             for dev in devices:
@@ -218,7 +219,7 @@ if __name__ == '__main__':
     macs_to_process = manager.dict()
     attempt_counter = manager.dict()
 
-    scanner_proc = Process(target=scanner_loop, args=(macs_to_process,))
+    scanner_proc = Process(target=scanner_loop, args=(macs_to_process, attempt_counter,))
     scanner_proc.start()
 
     try:
