@@ -171,7 +171,7 @@ def scanner_loop(macs_to_process, attempt_counter):
             
             for mac in list(macs_to_process.keys()):
                 prev = last_seen.get(mac)
-                if prev and (now - prev) > timedelta(minutes=1):
+                if prev and (now - prev) > timedelta(minutes=2):
                     cam_num = CAMERA_MAP.get(mac, mac)
                     del macs_to_process[mac]
                     attempt_counter[mac] = 0
@@ -235,7 +235,7 @@ if __name__ == '__main__':
                 attempt_counter[mac] = attempt_counter.get(mac, 0) + 1
                 #Process(target=run_gatttool, args=(mac, macs_to_process, attempt_counter)).start()
                 run_gatttool(mac, macs_to_process, attempt_counter)
-                time.sleep(1.5)
+                time.sleep(5)
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
