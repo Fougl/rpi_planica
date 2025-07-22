@@ -154,6 +154,9 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
                        check=False)
     except Exception as e:
         logging.error("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
+        logging.warning("Possible GATT tool error for {}. Restarting Bluetooth...".format(mac))
+        subprocess.run(["sudo", "systemctl", "restart", "bluetooth"])
+        time.sleep(5)
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
 # === Scanner Process ===
