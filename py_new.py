@@ -169,7 +169,7 @@ def scanner_loop(macs_to_process, attempt_counter):
 
     while True:
         try:
-            devices = scanner.scan(1)
+            devices = scanner.scan(4)
             now = datetime.now()
             
             for mac in list(macs_to_process.keys()):
@@ -238,7 +238,7 @@ if __name__ == '__main__':
                 attempt_counter[mac] = attempt_counter.get(mac, 0) + 1
                 #Process(target=run_gatttool, args=(mac, macs_to_process, attempt_counter)).start()
                 run_gatttool(mac, macs_to_process, attempt_counter)
-                time.sleep(5)
+                time.sleep(7)
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
