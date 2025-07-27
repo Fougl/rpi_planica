@@ -192,7 +192,7 @@ def scanner_loop(macs_to_process, attempt_counter):
                 if prev and (now - prev) > timedelta(minutes=1) and mac in macs_to_process:
                     del macs_to_process[mac]
 
-                if prev is None or (now - prev) > timedelta(minutes=10) or rssi_state.get(mac) == 'weak':
+                if prev is None or (now - prev) > timedelta(minutes=5) or rssi_state.get(mac) == 'weak':
                     if mac not in first_rssi:
                         first_rssi[mac] = rssi
                         absence_time[mac] = now
