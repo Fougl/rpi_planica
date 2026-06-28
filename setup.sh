@@ -65,7 +65,7 @@ echo "    Sudoers entry added."
 
 # 5. Add cron job (only if not already there)
 echo "[5/5] Setting up cron job..."
-( crontab -l 2>/dev/null | grep -v deploy.sh; echo "*/2 * * * * /bin/bash $DEPLOY_SCRIPT" ) | crontab -
+( sudo -u pi crontab -l 2>/dev/null | grep -v deploy.sh; echo "*/2 * * * * /bin/bash $DEPLOY_SCRIPT" ) | sudo -u pi crontab -
 echo "    Cron job set (every 2 minutes)."
 
 
