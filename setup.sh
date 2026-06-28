@@ -53,6 +53,7 @@ REMOTE=\$(git rev-parse origin/master)
 if [ "\$LOCAL" != "\$REMOTE" ]; then
     git pull origin master
     sudo systemctl restart $SERVICE_NAME
+    echo "\$(date): Deployed \$(git rev-parse --short HEAD)" >> /home/pi/deploy.log
 fi
 EOF
 chmod +x $DEPLOY_SCRIPT
