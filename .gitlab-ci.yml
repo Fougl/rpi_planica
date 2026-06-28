@@ -1,0 +1,12 @@
+stages:
+  - deploy
+
+deploy:
+  stage: deploy
+  only:
+    - master
+  script:
+    - cp py_new.py /home/pi/Desktop/py_new.py
+    - sudo systemctl restart py_new.service
+  tags:
+    - rpi-planica
