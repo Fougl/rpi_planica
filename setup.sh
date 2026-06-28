@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO_DIR="/home/pi/Desktop/desktop_rpi_planica.gi"
+REPO_DIR="/home/pi/Desktop"
 SCRIPT="$REPO_DIR/py_new.py"
 DEPLOY_SCRIPT="/home/pi/deploy.sh"
 SERVICE_NAME="py_new.service"
