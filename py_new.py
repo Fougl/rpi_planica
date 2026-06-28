@@ -96,26 +96,20 @@ KNOWN_CAMERAS = [
 KNOWN_CAMERAS = [x.lower() for x in KNOWN_CAMERAS]
 CAMERA_MAP = {mac: i + 1 for i, mac in enumerate(KNOWN_CAMERAS)}
 
-# === Email Failure Alert ===
-def send_failure_email(camera_number):
+# === Email Alert ===
+def send_email(subject, body):
     msg = EmailMessage()
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
-    msg["Subject"] = "GATT write failed 5 times for Camera {}".format(camera_number)
-    msg.set_content(
-        "All 5 attempts to write to camera {} failed at {}.".format(
-            camera_number,
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        )
-    )
-
+    msg["Subject"] = subject
+    msg.set_content(body)
     try:
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
             server.login(EMAIL_FROM, SMTP_PASS)
             server.send_message(msg)
-        logging.info("Sent failure email for camera {}".format(camera_number))
+        logging.info("Sent email: {}".format(subject))
     except Exception as e:
-        logging.error("Failed to send email for camera {}: {}".format(camera_number, e))
+        logging.error("Failed to send email: {}".format(e))
 
 # === GATT Execution ===
 def run_gatttool(mac, macs_to_process, attempt_counter):
@@ -204,6 +198,10 @@ class CameraDelegate(DefaultDelegate):
                     rssi_state[mac] = 'weak'
             elif rssi_state.get(mac) == 'weak' and rssi >= -70:
                 logging.info("Camera {} ({}) was WEAK after absence, now STRONG — trigger (RSSI={})".format(cam_num, mac, rssi))
+                send_email(
+                    "Camera {} back in range".format(cam_num),
+                    "Camera {} ({}) was absent and returned with strong signal (RSSI={}) at {}.".format(cam_num, mac, rssi, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                )
                 macs_to_process[mac] = 1
                 rssi_state[mac] = 'strong'
         else:
@@ -243,6 +241,10 @@ def scanner_loop(macs_to_process, attempt_counter):
                         del macs_to_process[mac]
                         attempt_counter[mac] = 0
                         logging.info(u"🗑️🗑️🗑️🗑️REMOVED - CAMERA {} NOT VISIBLE FOR SOME TIME.".format(cam_num))
+                        send_email(
+                            "Camera {} not visible".format(cam_num),
+                            "Camera {} ({}) has not been visible for over 2 minutes and was removed from processing at {}.".format(cam_num, mac, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                        )
         except Exception as e:
             logging.warning("Scan failed: {}".format(e))
             try:
@@ -267,7 +269,10 @@ if __name__ == '__main__':
                 if attempt_counter.get(mac, 0) >= 5:
                     cam_num = CAMERA_MAP.get(mac, mac)
                     logging.warning(u"❌❌❌❌❌CAMERA {} ({}) FAILED 5 TIMES.❌❌❌❌❌❌❌❌❌❌".format(cam_num, mac))
-                    send_failure_email(cam_num)
+                    send_email(
+                        "GATT write failed 5 times for Camera {}".format(cam_num),
+                        "All 5 attempts to write to camera {} failed at {}.".format(cam_num, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    )
                     attempt_counter[mac] = 0
                     continue
 
