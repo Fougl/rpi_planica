@@ -11,7 +11,8 @@ echo "=== Setting up py_new service and auto-deploy ==="
 # 1. Install Python dependencies
 echo "[1/5] Installing Python dependencies..."
 sudo apt install -y python3-pip
-sudo pip3 install bluepy pexpect
+python3 -c "import bluepy" 2>/dev/null || sudo pip3 install bluepy
+python3 -c "import pexpect" 2>/dev/null || sudo pip3 install pexpect
 echo "    Python dependencies installed."
 
 # 2. Install systemd service
