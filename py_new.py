@@ -216,7 +216,7 @@ class CameraDelegate(DefaultDelegate):
         last_seen[mac] = now
 
 
-SCANNER_RESTART_INTERVAL = timedelta(hours=1)
+SCANNER_RESTART_INTERVAL = timedelta(hours=24)
 
 def scanner_loop(macs_to_process, attempt_counter):
     state = {
@@ -234,7 +234,8 @@ def scanner_loop(macs_to_process, attempt_counter):
             # dict which accumulates all BLE devices seen and causes memory leak.
             scanner.clear()
             scanner.start(passive=True)
-            restart_at = datetime.now() + SCANNER_RESTART_INTERVAL
+            tomorrow = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            restart_at = tomorrow
 
             while datetime.now() < restart_at:
                 # process() returns control every 1s so we can run housekeeping;
