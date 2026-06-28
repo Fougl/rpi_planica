@@ -216,6 +216,8 @@ class CameraDelegate(DefaultDelegate):
         last_seen[mac] = now
 
 
+SCANNER_RESTART_INTERVAL = timedelta(hours=1)
+
 def scanner_loop(macs_to_process, attempt_counter):
     state = {
         'last_seen': {},
@@ -228,10 +230,13 @@ def scanner_loop(macs_to_process, attempt_counter):
 
     while True:
         try:
-            # Arm the controller once, then stream reports continuously.
+            # Restart scanner periodically to flush bluepy's internal device
+            # dict which accumulates all BLE devices seen and causes memory leak.
             scanner.clear()
             scanner.start(passive=True)
-            while True:
+            restart_at = datetime.now() + SCANNER_RESTART_INTERVAL
+
+            while datetime.now() < restart_at:
                 # process() returns control every 1s so we can run housekeeping;
                 # in between, handleDiscovery fires per advertisement in real time.
                 scanner.process(1.0)
@@ -249,6 +254,9 @@ def scanner_loop(macs_to_process, attempt_counter):
                             "Camera {} not visible".format(cam_num),
                             "Camera {} ({}) has not been visible for over 2 minutes and was removed from processing at {}.".format(cam_num, mac, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                         )
+
+            scanner.stop()
+            logging.info("Scanner restarted to flush memory.")
         except Exception as e:
             logging.warning("Scan failed: {}".format(e))
             try:
