@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 REPO_DIR="/home/pi/Desktop"
 SCRIPT="$REPO_DIR/py_new.py"
