@@ -58,15 +58,19 @@ EOF
 chmod +x $DEPLOY_SCRIPT
 echo "    Deploy script created at $DEPLOY_SCRIPT."
 
-# 4. Sudoers entry so pi can restart service without password
+# 4. Sudoers entry so pi can restart service and reboot without password
 echo "[4/5] Configuring sudoers..."
 echo "pi ALL=(ALL) NOPASSWD: /bin/systemctl restart $SERVICE_NAME" | sudo tee /etc/sudoers.d/pi-deploy > /dev/null
+echo "pi ALL=(ALL) NOPASSWD: /sbin/reboot" | sudo tee -a /etc/sudoers.d/pi-deploy > /dev/null
 echo "    Sudoers entry added."
 
-# 5. Add cron job (only if not already there)
-echo "[5/5] Setting up cron job..."
-( sudo -u pi crontab -l 2>/dev/null | grep -v deploy.sh; echo "*/2 * * * * /bin/bash $DEPLOY_SCRIPT" ) | sudo -u pi crontab -
-echo "    Cron job set (every 2 minutes)."
+# 5. Add cron jobs (only if not already there)
+echo "[5/5] Setting up cron jobs..."
+( sudo -u pi crontab -l 2>/dev/null | grep -v deploy.sh | grep -v monitor_memory; \
+  echo "*/2 * * * * /bin/bash $DEPLOY_SCRIPT"; \
+  echo "*/5 * * * * /usr/bin/python3 $REPO_DIR/monitor_memory.py" \
+) | sudo -u pi crontab -
+echo "    Cron jobs set (deploy every 2min, memory check every 5min)."
 
 
 echo ""
