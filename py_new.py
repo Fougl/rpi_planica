@@ -193,6 +193,10 @@ class CameraDelegate(DefaultDelegate):
                 if rssi >= -70:
                     logging.info("Camera {} ({}) was absent >10min, returned STRONG (RSSI={})".format(cam_num, mac, rssi))
                     rssi_state[mac] = 'strong'
+                    send_email(
+                        "Camera {} back in range".format(cam_num),
+                        "Camera {} ({}) was absent and returned with strong signal (RSSI={}) at {}.".format(cam_num, mac, rssi, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    )
                 else:
                     logging.info("Camera {} ({}) was absent >10min, returned WEAK (RSSI={})".format(cam_num, mac, rssi))
                     rssi_state[mac] = 'weak'
