@@ -186,7 +186,10 @@ class CameraDelegate(DefaultDelegate):
         if prev and (now - prev) > timedelta(minutes=1) and mac in macs_to_process:
             del macs_to_process[mac]
 
-        if prev is None or (now - prev) > timedelta(minutes=5) or rssi_state.get(mac) == 'weak':
+        if prev is None:
+            # First sighting since script start — just record, no absence logic
+            rssi_state[mac] = 'strong' if rssi >= -70 else 'weak'
+        elif (now - prev) > timedelta(minutes=5) or rssi_state.get(mac) == 'weak':
             if mac not in first_rssi:
                 first_rssi[mac] = rssi
                 absence_time[mac] = now
