@@ -205,10 +205,6 @@ class CameraDelegate(DefaultDelegate):
                     rssi_state[mac] = 'weak'
             elif rssi_state.get(mac) == 'weak' and rssi >= -70:
                 logging.info("Camera {} ({}) was WEAK after absence, now STRONG — trigger (RSSI={})".format(cam_num, mac, rssi))
-                send_email(
-                    "Camera {} back in range".format(cam_num),
-                    "Camera {} ({}) was absent and returned with strong signal (RSSI={}) at {}.".format(cam_num, mac, rssi, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                )
                 macs_to_process[mac] = 1
                 rssi_state[mac] = 'strong'
         else:
