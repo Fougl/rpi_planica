@@ -178,6 +178,10 @@ class CameraDelegate(DefaultDelegate):
         first_rssi = self.state['first_rssi']
         rssi_state = self.state['rssi_state']
         absence_time = self.state['absence_time']
+        absent_logged = self.state['absent_logged']
+
+        # Seen again — clear the absence flag so a future absence logs once more.
+        absent_logged.discard(mac)
 
         rssi = dev.rssi
         now = datetime.now()
@@ -224,6 +228,7 @@ def scanner_loop(macs_to_process, attempt_counter):
         'first_rssi': {},
         'rssi_state': {},
         'absence_time': {},
+        'absent_logged': set(),
     }
     delegate = CameraDelegate(macs_to_process, attempt_counter, state)
     scanner = Scanner().withDelegate(delegate)
@@ -253,6 +258,17 @@ def scanner_loop(macs_to_process, attempt_counter):
                             "Camera {} not visible".format(cam_num),
                             "Camera {} ({}) has not been visible for over 2 minutes and was removed from processing at {}.".format(cam_num, mac, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                         )
+
+                # Log once the moment a camera crosses 10 min absent, so a camera
+                # that goes silent (off, dead battery, out of range) is visible in
+                # the log instead of vanishing quietly. Reset when it reappears.
+                absent_logged = state['absent_logged']
+                for mac in list(last_seen.keys()):
+                    prev = last_seen.get(mac)
+                    if prev and (now - prev) > timedelta(minutes=10) and mac not in absent_logged:
+                        cam_num = CAMERA_MAP.get(mac, mac)
+                        logging.info(u"📭📭📭📭ABSENT - CAMERA {} ({}) NOT SEEN FOR OVER 10 MIN.".format(cam_num, mac))
+                        absent_logged.add(mac)
 
                 # Flush bluepy's device dict every 60s to keep memory bounded.
                 if (now - last_clear) > timedelta(seconds=60):
