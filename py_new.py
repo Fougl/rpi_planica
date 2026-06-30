@@ -268,6 +268,10 @@ def scanner_loop(macs_to_process, attempt_counter):
                     if prev and (now - prev) > timedelta(minutes=10) and mac not in absent_logged:
                         cam_num = CAMERA_MAP.get(mac, mac)
                         logging.info(u"📭📭📭📭ABSENT - CAMERA {} ({}) NOT SEEN FOR OVER 10 MIN.".format(cam_num, mac))
+                        send_email(
+                            "Camera {} gone dark".format(cam_num),
+                            "Camera {} ({}) has not been seen for over 10 minutes, last seen at {}.".format(cam_num, mac, prev.strftime('%Y-%m-%d %H:%M:%S'))
+                        )
                         absent_logged.add(mac)
 
                 # Flush bluepy's device dict every 60s to keep memory bounded.
