@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import smtplib
 from email.message import EmailMessage
-from bluepy.btle import Scanner
+from bluepy.btle import Scanner, DefaultDelegate
 import pexpect
 import sys
 
@@ -154,68 +154,117 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
 # === Scanner Process ===
+# Continuous ACTIVE scan via bluepy's start()/process() streaming API. scan()
+# uses these same primitives internally, so the mechanism is proven on this
+# hardware — the earlier failure was specifically passive=True, which did NOT
+# receive the GoPro advertisements. Keeping the scan running (instead of a 4s
+# batch) means we react to each advertising report in near real time.
+# scanner.clear() runs periodically to flush bluepy's device dict and keep
+# memory bounded.
+class CameraDelegate(DefaultDelegate):
+    def __init__(self, macs_to_process, attempt_counter, state):
+        DefaultDelegate.__init__(self)
+        self.macs_to_process = macs_to_process
+        self.attempt_counter = attempt_counter
+        self.state = state
+
+    def handleDiscovery(self, dev, isNewDev, isNewData):
+        mac = dev.addr.lower()
+        if mac not in KNOWN_CAMERAS:
+            return
+
+        macs_to_process = self.macs_to_process
+        last_seen = self.state['last_seen']
+        first_rssi = self.state['first_rssi']
+        rssi_state = self.state['rssi_state']
+        absence_time = self.state['absence_time']
+
+        rssi = dev.rssi
+        now = datetime.now()
+        cam_num = CAMERA_MAP.get(mac, mac)
+        prev = last_seen.get(mac)
+
+        if prev and (now - prev) > timedelta(minutes=1) and mac in macs_to_process:
+            del macs_to_process[mac]
+
+        if prev is None or (now - prev) > timedelta(minutes=5) or rssi_state.get(mac) == 'weak':
+            if mac not in first_rssi:
+                first_rssi[mac] = rssi
+                absence_time[mac] = now
+                # Real absence = camera was seen before and then gone >5min.
+                # First sighting after script start (prev is None) must NOT email,
+                # or every restart spams an email per camera.
+                real_absence = prev is not None and (now - prev) > timedelta(minutes=5)
+                if rssi >= -70:
+                    logging.info("Camera {} ({}) was absent >10min, returned STRONG (RSSI={})".format(cam_num, mac, rssi))
+                    rssi_state[mac] = 'strong'
+                    if real_absence:
+                        send_email(
+                            "Camera {} back in range".format(cam_num),
+                            "Camera {} ({}) was absent and returned with strong signal (RSSI={}) at {}.".format(cam_num, mac, rssi, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                        )
+                else:
+                    logging.info("Camera {} ({}) was absent >10min, returned WEAK (RSSI={})".format(cam_num, mac, rssi))
+                    rssi_state[mac] = 'weak'
+            elif rssi_state.get(mac) == 'weak' and rssi >= -70:
+                logging.info("Camera {} ({}) was WEAK after absence, now STRONG — trigger (RSSI={})".format(cam_num, mac, rssi))
+                macs_to_process[mac] = 1
+                rssi_state[mac] = 'strong'
+        else:
+            if mac in first_rssi:
+                del first_rssi[mac]
+                absence_time[mac] = None
+
+        last_seen[mac] = now
+
+
 def scanner_loop(macs_to_process, attempt_counter):
-    scanner = Scanner()
-    last_seen = {}
-    first_rssi = {}
-    rssi_state = {}
-    absence_time = {}
+    state = {
+        'last_seen': {},
+        'first_rssi': {},
+        'rssi_state': {},
+        'absence_time': {},
+    }
+    delegate = CameraDelegate(macs_to_process, attempt_counter, state)
+    scanner = Scanner().withDelegate(delegate)
 
     while True:
         try:
-            devices = scanner.scan(4)
-            now = datetime.now()
+            scanner.clear()
+            scanner.start(passive=False)  # ACTIVE scan — required to see the cameras
+            last_clear = datetime.now()
 
-            for mac in list(macs_to_process.keys()):
-                prev = last_seen.get(mac)
-                if prev and (now - prev) > timedelta(minutes=2):
-                    cam_num = CAMERA_MAP.get(mac, mac)
-                    del macs_to_process[mac]
-                    attempt_counter[mac] = 0
-                    logging.info(u"🗑️🗑️🗑️🗑️REMOVED - CAMERA {} NOT VISIBLE FOR SOME TIME.".format(cam_num))
-                    send_email(
-                        "Camera {} not visible".format(cam_num),
-                        "Camera {} ({}) has not been visible for over 2 minutes and was removed from processing at {}.".format(cam_num, mac, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                    )
+            while True:
+                # handleDiscovery fires per advertisement during process().
+                scanner.process(1.0)
 
-            for dev in devices:
-                mac = dev.addr.lower()
-                if mac not in KNOWN_CAMERAS:
-                    continue
+                now = datetime.now()
+                last_seen = state['last_seen']
 
-                rssi = dev.rssi
-                cam_num = CAMERA_MAP.get(mac, mac)
-                prev = last_seen.get(mac)
+                # Housekeeping: drop cameras not seen for >2 min.
+                for mac in list(macs_to_process.keys()):
+                    prev = last_seen.get(mac)
+                    if prev and (now - prev) > timedelta(minutes=2):
+                        cam_num = CAMERA_MAP.get(mac, mac)
+                        del macs_to_process[mac]
+                        attempt_counter[mac] = 0
+                        logging.info(u"🗑️🗑️🗑️🗑️REMOVED - CAMERA {} NOT VISIBLE FOR SOME TIME.".format(cam_num))
+                        send_email(
+                            "Camera {} not visible".format(cam_num),
+                            "Camera {} ({}) has not been visible for over 2 minutes and was removed from processing at {}.".format(cam_num, mac, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                        )
 
-                if prev and (now - prev) > timedelta(minutes=1) and mac in macs_to_process:
-                    del macs_to_process[mac]
-
-                if prev is None or (now - prev) > timedelta(minutes=5) or rssi_state.get(mac) == 'weak':
-                    if mac not in first_rssi:
-                        first_rssi[mac] = rssi
-                        absence_time[mac] = now
-                        if rssi >= -70:
-                            logging.info("Camera {} ({}) was absent >10min, returned STRONG (RSSI={})".format(cam_num, mac, rssi))
-                            rssi_state[mac] = 'strong'
-                            send_email(
-                                "Camera {} back in range".format(cam_num),
-                                "Camera {} ({}) was absent and returned with strong signal (RSSI={}) at {}.".format(cam_num, mac, rssi, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                            )
-                        else:
-                            logging.info("Camera {} ({}) was absent >10min, returned WEAK (RSSI={})".format(cam_num, mac, rssi))
-                            rssi_state[mac] = 'weak'
-                    elif rssi_state.get(mac) == 'weak' and rssi >= -70:
-                        logging.info("Camera {} ({}) was WEAK after absence, now STRONG — trigger (RSSI={})".format(cam_num, mac, rssi))
-                        macs_to_process[mac] = 1
-                        rssi_state[mac] = 'strong'
-                else:
-                    if mac in first_rssi:
-                        del first_rssi[mac]
-                        absence_time[mac] = None
-
-                last_seen[mac] = now
+                # Flush bluepy's device dict every 60s to keep memory bounded.
+                if (now - last_clear) > timedelta(seconds=60):
+                    scanner.clear()
+                    last_clear = now
         except Exception as e:
             logging.warning("Scan failed: {}".format(e))
+            try:
+                scanner.stop()
+            except Exception:
+                pass
+            time.sleep(1)
 
 # === Main Controller ===
 if __name__ == '__main__':
