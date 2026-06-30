@@ -70,7 +70,14 @@ echo "[5/5] Setting up cron jobs..."
   echo "*/2 * * * * /bin/bash $DEPLOY_SCRIPT"; \
   echo "*/5 * * * * /usr/bin/python3 $REPO_DIR/monitor_memory.py" \
 ) | sudo -u pi crontab -
-echo "    Cron jobs set (deploy every 2min, memory check every 5min)."
+
+# End-of-day gatttool sweep goes in ROOT's crontab so gatttool has Bluetooth
+# access (same reason the service runs as root). Fires hourly; the script only
+# acts at 18:00 Europe/Ljubljana (it checks the timezone itself).
+( sudo crontab -l 2>/dev/null | grep -v run_gatttool_all; \
+  echo "0 * * * * /usr/bin/python3 $REPO_DIR/run_gatttool_all.py" \
+) | sudo crontab -
+echo "    Cron jobs set (deploy 2min, memory 5min, 18:00 Ljubljana gatttool sweep)."
 
 
 echo ""
