@@ -6,6 +6,7 @@
 # acts at 18:00. That makes it correct regardless of the Pi's system timezone
 # (the Pi's clock is on BST, Ljubljana is BST+1) — no system clock change needed.
 import os
+import sys
 import time
 import subprocess
 import logging
@@ -68,8 +69,10 @@ def run_gatttool(mac):
 
 
 if __name__ == '__main__':
-    if time.localtime().tm_hour != TARGET_HOUR:
+    force = len(sys.argv) > 1 and sys.argv[1] in ('--now', '--force')
+    if not force and time.localtime().tm_hour != TARGET_HOUR:
         # Not 18:00 Ljubljana — cron fires hourly, so exit quietly otherwise.
+        # Pass --now to run the sweep immediately (for testing).
         raise SystemExit(0)
 
     logging.info(u"🌙🌙🌙 18:00 Ljubljana — end-of-day gatttool sweep over all cameras 🌙🌙🌙")
