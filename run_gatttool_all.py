@@ -61,12 +61,17 @@ def run_gatttool(mac):
     else:
         logging.info("🌙 Camera {} no confirmation, output: {}".format(cam_num, output.strip()))
 
+    # Same as py_new: if the disconnect hangs, the adapter is wedged — restart
+    # bluetooth so the next attempt can connect. This is what makes it work.
     try:
         subprocess.run(["bluetoothctl", "disconnect", mac],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=2, check=False)
+                       timeout=1, check=False)
     except Exception as e:
-        logging.error("disconnect failed for {}: {}".format(mac, e))
+        logging.error("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
+        logging.warning("Possible GATT tool error for {}. Restarting Bluetooth...".format(mac))
+        subprocess.run(["systemctl", "restart", "bluetooth"], check=False)
+        time.sleep(5)
 
     return ok
 
@@ -78,14 +83,34 @@ if __name__ == '__main__':
         # Pass --now to run the sweep immediately (for testing).
         raise SystemExit(0)
 
-    logging.info(u"🌙🌙🌙 18:00 Ljubljana — end-of-day gatttool sweep over all cameras 🌙🌙🌙")
+    logging.info(u"🌙🌙🌙 18:00 Ljubljana — end-of-day gatttool sweep (cameras 6-13) 🌙🌙🌙")
+
+    # Free the adapter: py_new's continuous scan (btmon + bluetoothctl scan on)
+    # starves the gatttool connections, which is why every camera timed out.
+    # Stop the service (systemd kills its btmon/bluetoothctl children too), then
+    # bring it back when the sweep is done.
+    subprocess.run(["systemctl", "stop", "py_new.service"], check=False)
+    subprocess.run(["pkill", "-x", "btmon"], check=False)
+    subprocess.run(["pkill", "-x", "bluetoothctl"], check=False)
+    time.sleep(3)
+
     reached = 0
     missed = []
-    for mac in KNOWN_CAMERAS:
-        if run_gatttool(mac):
-            reached += 1
-        else:
-            missed.append(CAMERA_MAP[mac])
-        time.sleep(2)
-    logging.info(u"🌙 Sweep complete: {}/{} reached. Missed cameras: {}".format(
-        reached, len(KNOWN_CAMERAS), missed if missed else "none"))
+    try:
+        for mac in KNOWN_CAMERAS[5:]:            # cameras 6..13 only
+            cam_num = CAMERA_MAP[mac]
+            ok = False
+            for attempt in range(3):             # retry, like py_new does
+                if run_gatttool(mac):
+                    ok = True
+                    break
+                time.sleep(2)
+            if ok:
+                reached += 1
+            else:
+                missed.append(cam_num)
+    finally:
+        subprocess.run(["systemctl", "start", "py_new.service"], check=False)
+
+    logging.info(u"🌙 Sweep complete: {} reached, missed: {}. py_new restarted.".format(
+        reached, missed if missed else "none"))
