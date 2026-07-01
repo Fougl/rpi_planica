@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
-# End-of-day sweep: send the gatttool command (same as py_new's run_gatttool) to
-# every known camera at 18:00 Europe/Ljubljana.
+# End-of-day sweep: run gatttool on cameras 6-13 at 18:00 Europe/Ljubljana,
+# using the EXACT same gatttool logic as py_new.py (run_gatttool, the retry loop
+# and send_failure_email are copied verbatim). py_new stays running — its bluepy
+# scan coexists with gatttool exactly as it does during normal operation.
 #
-# Cron fires this hourly; the script itself checks the Ljubljana hour and only
-# acts at 18:00. That makes it correct regardless of the Pi's system timezone
-# (the Pi's clock is on BST, Ljubljana is BST+1) — no system clock change needed.
+# Cron fires this hourly; the script checks the Ljubljana hour and only acts at
+# 18:00, so it is correct regardless of the Pi's system timezone.
 import os
 import sys
 import time
 import subprocess
 import logging
 from pathlib import Path
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime
 
 # Evaluate "now" in Ljubljana time regardless of the system timezone.
 os.environ['TZ'] = 'Europe/Ljubljana'
@@ -18,7 +22,14 @@ time.tzset()
 
 TARGET_HOUR = 18  # 18:00 Ljubljana
 
-# Same cameras as py_new.py — keep this list in sync with that file.
+# === Email Configuration ===
+EMAIL_FROM = "planica.zipline@gmail.com"
+EMAIL_TO = "planica.zipline@gmail.com"
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 465
+SMTP_PASS = "bjrwefqlgikznpfm"
+
+# === Known Camera MACs (same as py_new.py) ===
 KNOWN_CAMERAS = [
     'fb:9a:49:68:6b:f2', 'd5:ed:26:d6:c2:3b', 'dd:30:f0:c9:83:f0', 'e7:5c:2c:64:3c:1c',
     'ff:30:3a:eb:6b:d3', 'ef:be:79:67:78:46', 'f4:8f:f7:98:81:3a', 'f3:f6:b0:75:90:61',
@@ -28,6 +39,7 @@ KNOWN_CAMERAS = [
 KNOWN_CAMERAS = [x.lower() for x in KNOWN_CAMERAS]
 CAMERA_MAP = {mac: i + 1 for i, mac in enumerate(KNOWN_CAMERAS)}
 
+# === Logging ===
 log_file = Path("/home/pi/Desktop/new_log.log")
 file_handler = logging.FileHandler(str(log_file), mode='a', encoding='utf-8')
 file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -38,10 +50,34 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(console_handler)
 
+# === Email Failure Alert (verbatim from py_new.py) ===
+def send_failure_email(camera_number):
+    msg = EmailMessage()
+    msg["From"] = EMAIL_FROM
+    msg["To"] = EMAIL_TO
+    msg["Subject"] = "GATT write failed 5 times for Camera {}".format(camera_number)
+    msg.set_content(
+        "All 5 attempts to write to camera {} failed at {}.".format(
+            camera_number,
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        )
+    )
 
-def run_gatttool(mac):
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            server.login(EMAIL_FROM, SMTP_PASS)
+            server.send_message(msg)
+        logging.info("Sent failure email for camera {}".format(camera_number))
+    except Exception as e:
+        logging.error("Failed to send email for camera {}: {}".format(camera_number, e))
+
+# === GATT Execution (verbatim from py_new.py) ===
+def run_gatttool(mac, macs_to_process, attempt_counter):
     cam_num = CAMERA_MAP.get(mac, mac)
-    logging.info(u"🌙 18:00 sweep — gatttool for Camera {} ({})".format(cam_num, mac))
+    if attempt_counter[mac]==1:
+        logging.info(u"🚀🚀🚀🚀🚀 START GATTTOOL FOR CAMERA {} ({}) 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀".format(cam_num, mac))
+    logging.info("Running gatttool for Camera {} ({})".format(cam_num, mac))
+
     cmd = [
         "timeout", "--foreground", "3",
         "gatttool", "-t", "random", "-b", mac,
@@ -55,27 +91,29 @@ def run_gatttool(mac):
         logging.error("Exception calling gatttool for {}: {}".format(mac, e))
         output = ""
 
-    ok = "Characteristic value was written successfully" in output
-    if ok:
-        logging.info(u"🌙✅ Camera {} done".format(cam_num))
+    success = "Characteristic value was written successfully" in output
+    if success:
+        logging.info(u"🥇🥇🥇🥇🥇🥇SUCCESS FOR CAMERA{} 🥇🥇🥇🥇🥇🥇🥇🥇🥇🥇🥇🥇".format(cam_num))
+        attempt_counter[mac] = 0
+        if mac in macs_to_process:
+            del macs_to_process[mac]
     else:
-        logging.info("🌙 Camera {} no confirmation, output: {}".format(cam_num, output.strip()))
+        logging.info("Failed for {}, output: {}".format(mac, output.strip()))
 
-    # Same as py_new: if the disconnect hangs, the adapter is wedged — restart
-    # bluetooth so the next attempt can connect. This is what makes it work.
     try:
         subprocess.run(["bluetoothctl", "disconnect", mac],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=1, check=False)
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL,
+                       timeout=1,
+                       check=False)
     except Exception as e:
         logging.error("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
         logging.warning("Possible GATT tool error for {}. Restarting Bluetooth...".format(mac))
-        subprocess.run(["systemctl", "restart", "bluetooth"], check=False)
+        subprocess.run(["sudo", "systemctl", "restart", "bluetooth"])
         time.sleep(5)
+    logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
-    return ok
-
-
+# === Main Controller ===
 if __name__ == '__main__':
     force = len(sys.argv) > 1 and sys.argv[1] in ('--now', '--force')
     if not force and time.localtime().tm_hour != TARGET_HOUR:
@@ -83,34 +121,28 @@ if __name__ == '__main__':
         # Pass --now to run the sweep immediately (for testing).
         raise SystemExit(0)
 
-    logging.info(u"🌙🌙🌙 18:00 Ljubljana — end-of-day gatttool sweep (cameras 6-13) 🌙🌙🌙")
+    logging.info(u"🌙🌙🌙 18:00 Ljubljana — gatttool sweep over cameras 6-13 🌙🌙🌙")
 
-    # Free the adapter: py_new's continuous scan (btmon + bluetoothctl scan on)
-    # starves the gatttool connections, which is why every camera timed out.
-    # Stop the service (systemd kills its btmon/bluetoothctl children too), then
-    # bring it back when the sweep is done.
-    subprocess.run(["systemctl", "stop", "py_new.service"], check=False)
-    subprocess.run(["pkill", "-x", "btmon"], check=False)
-    subprocess.run(["pkill", "-x", "bluetoothctl"], check=False)
-    time.sleep(3)
+    # Cameras 6-13 (indices 5..12), queued exactly like py_new queues a camera.
+    sweep_macs = KNOWN_CAMERAS[5:]
+    macs_to_process = {mac: 1 for mac in sweep_macs}
+    attempt_counter = {mac: 0 for mac in sweep_macs}
 
-    reached = 0
-    missed = []
-    try:
-        for mac in KNOWN_CAMERAS[5:]:            # cameras 6..13 only
-            cam_num = CAMERA_MAP[mac]
-            ok = False
-            for attempt in range(3):             # retry, like py_new does
-                if run_gatttool(mac):
-                    ok = True
-                    break
-                time.sleep(2)
-            if ok:
-                reached += 1
-            else:
-                missed.append(cam_num)
-    finally:
-        subprocess.run(["systemctl", "start", "py_new.service"], check=False)
+    # Same retry loop as py_new's main controller. Only difference: it ends when
+    # every camera is done (success removes it in run_gatttool; a 5-times failure
+    # removes it here), since there is no scanner to clear macs_to_process.
+    while macs_to_process:
+        for mac in list(macs_to_process.keys()):
+            if attempt_counter.get(mac, 0) >= 5:
+                cam_num = CAMERA_MAP.get(mac, mac)
+                logging.warning(u"❌❌❌❌❌CAMERA {} ({}) FAILED 5 TIMES.❌❌❌❌❌❌❌❌❌❌".format(cam_num, mac))
+                send_failure_email(cam_num)
+                attempt_counter[mac] = 0
+                del macs_to_process[mac]
+                continue
 
-    logging.info(u"🌙 Sweep complete: {} reached, missed: {}. py_new restarted.".format(
-        reached, missed if missed else "none"))
+            attempt_counter[mac] = attempt_counter.get(mac, 0) + 1
+            run_gatttool(mac, macs_to_process, attempt_counter)
+            time.sleep(7)
+
+    logging.info(u"🌙 Sweep complete.")
