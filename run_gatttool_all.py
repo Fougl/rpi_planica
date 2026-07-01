@@ -55,7 +55,8 @@ def run_gatttool(mac):
         logging.error("Exception calling gatttool for {}: {}".format(mac, e))
         output = ""
 
-    if "Characteristic value was written successfully" in output:
+    ok = "Characteristic value was written successfully" in output
+    if ok:
         logging.info(u"🌙✅ Camera {} done".format(cam_num))
     else:
         logging.info("🌙 Camera {} no confirmation, output: {}".format(cam_num, output.strip()))
@@ -67,6 +68,8 @@ def run_gatttool(mac):
     except Exception as e:
         logging.error("disconnect failed for {}: {}".format(mac, e))
 
+    return ok
+
 
 if __name__ == '__main__':
     force = len(sys.argv) > 1 and sys.argv[1] in ('--now', '--force')
@@ -76,7 +79,13 @@ if __name__ == '__main__':
         raise SystemExit(0)
 
     logging.info(u"🌙🌙🌙 18:00 Ljubljana — end-of-day gatttool sweep over all cameras 🌙🌙🌙")
+    reached = 0
+    missed = []
     for mac in KNOWN_CAMERAS:
-        run_gatttool(mac)
+        if run_gatttool(mac):
+            reached += 1
+        else:
+            missed.append(CAMERA_MAP[mac])
         time.sleep(2)
-    logging.info(u"🌙 End-of-day sweep complete.")
+    logging.info(u"🌙 Sweep complete: {}/{} reached. Missed cameras: {}".format(
+        reached, len(KNOWN_CAMERAS), missed if missed else "none"))
