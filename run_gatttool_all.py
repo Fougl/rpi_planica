@@ -79,7 +79,7 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
     logging.info("Running gatttool for Camera {} ({})".format(cam_num, mac))
 
     cmd = [
-        "timeout", "--foreground", "3",
+        "timeout", "--foreground", "10",
         "gatttool", "-t", "random", "-b", mac,
         "--char-write-req", "-a", "0x2f", "-n", "03170101"
     ]
@@ -100,18 +100,12 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
     else:
         logging.info("Failed for {}, output: {}".format(mac, output.strip()))
 
-    try:
-        subprocess.run(["bluetoothctl", "disconnect", mac],
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL,
-                       timeout=1,
-                       check=False)
-    except Exception as e:
-        logging.error("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
-        logging.warning("Possible GATT tool error for {}. Restarting Bluetooth...".format(mac))
-        subprocess.run(["sudo", "systemctl", "restart", "bluetooth"])
-        time.sleep(5)
-    logging.info("Finished bluetoothctl disconnect for {}".format(mac))
+    # NOTE: no bluetoothctl disconnect / bluetooth restart here (unlike py_new).
+    # gatttool drops its own raw connection when it exits, so there is nothing for
+    # bluetoothctl to disconnect — that call always timed out (bluetoothd never saw
+    # gatttool's connection) and its handler ran `systemctl restart bluetooth` on
+    # EVERY camera. In this back-to-back sweep that tore the adapter down repeatedly
+    # and sabotaged the following write. The main loop's sleep(7) spaces attempts.
 
 # === Main Controller ===
 if __name__ == '__main__':
