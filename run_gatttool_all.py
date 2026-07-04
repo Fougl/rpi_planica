@@ -27,7 +27,7 @@ EMAIL_FROM = "planica.zipline@gmail.com"
 EMAIL_TO = "planica.zipline@gmail.com"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
-SMTP_PASS = "bjrwefqlgikznpfm"
+SMTP_PASS = os.environ["SMTP_PASS"]
 
 # === Known Camera MACs (same as py_new.py) ===
 KNOWN_CAMERAS = [

@@ -32,7 +32,7 @@ EMAIL_FROM = "planica.zipline@gmail.com"
 EMAIL_TO   = "planica.zipline@gmail.com"
 SMTP_HOST  = "smtp.gmail.com"
 SMTP_PORT  = 465
-SMTP_PASS  = "bjrwefqlgikznpfm"
+SMTP_PASS  = os.environ["SMTP_PASS"]
 
 now = datetime.now()
 

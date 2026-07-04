@@ -8,14 +8,27 @@ SERVICE_NAME="py_new.service"
 echo "=== Setting up py_new service and auto-deploy ==="
 
 # 1. Install Python dependencies
-echo "[1/6] Installing Python dependencies..."
+echo "[1/7] Installing Python dependencies..."
 sudo apt install -y python3-pip
 python3 -c "import bluepy" 2>/dev/null || sudo pip3 install bluepy
 python3 -c "import pexpect" 2>/dev/null || sudo pip3 install pexpect
 echo "    Python dependencies installed."
 
-# 2. Install systemd service
-echo "[2/6] Installing systemd service..."
+# 2. Prompt once for the Gmail App Password and store it outside git.
+echo "[2/7] Configuring email credentials..."
+ENV_FILE="$REPO_DIR/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    read -s -p "    Enter Gmail App Password for planica.zipline@gmail.com: " SMTP_PASS
+    echo
+    echo "SMTP_PASS=$SMTP_PASS" > "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    echo "    Saved to $ENV_FILE."
+else
+    echo "    $ENV_FILE already exists, skipping prompt."
+fi
+
+# 3. Install systemd service
+echo "[3/7] Installing systemd service..."
 sudo tee /etc/systemd/system/$SERVICE_NAME > /dev/null <<EOF
 [Unit]
 Description=Scan Gopro Service
@@ -24,6 +37,7 @@ After=network.target bluetooth.target
 [Service]
 Type=simple
 WorkingDirectory=$REPO_DIR
+EnvironmentFile=-$ENV_FILE
 ExecStart=/usr/bin/python3 $SCRIPT
 Restart=always
 RestartSec=60
@@ -39,8 +53,8 @@ sudo systemctl enable $SERVICE_NAME
 sudo systemctl restart $SERVICE_NAME
 echo "    Service installed and started."
 
-# 3. Create deploy script
-echo "[3/6] Creating deploy script..."
+# 4. Create deploy script
+echo "[4/7] Creating deploy script..."
 cat > $DEPLOY_SCRIPT <<EOF
 #!/bin/bash
 cd $REPO_DIR || exit 1
@@ -58,29 +72,29 @@ EOF
 chmod +x $DEPLOY_SCRIPT
 echo "    Deploy script created at $DEPLOY_SCRIPT."
 
-# 4. Sudoers entry so pi can restart service and reboot without password
-echo "[4/6] Configuring sudoers..."
+# 5. Sudoers entry so pi can restart service and reboot without password
+echo "[5/7] Configuring sudoers..."
 echo "pi ALL=(ALL) NOPASSWD: /bin/systemctl restart $SERVICE_NAME" | sudo tee /etc/sudoers.d/pi-deploy > /dev/null
 echo "pi ALL=(ALL) NOPASSWD: /sbin/reboot" | sudo tee -a /etc/sudoers.d/pi-deploy > /dev/null
 echo "    Sudoers entry added."
 
-# 5. Add cron jobs (only if not already there)
-echo "[5/6] Setting up cron jobs..."
+# 6. Add cron jobs (only if not already there)
+echo "[6/7] Setting up cron jobs..."
 ( sudo -u pi crontab -l 2>/dev/null | grep -v deploy.sh | grep -v monitor_memory; \
   echo "*/2 * * * * /bin/bash $DEPLOY_SCRIPT"; \
-  echo "*/5 * * * * /usr/bin/python3 $REPO_DIR/monitor_memory.py" \
+  echo "*/5 * * * * set -a; . $ENV_FILE; set +a; /usr/bin/python3 $REPO_DIR/monitor_memory.py" \
 ) | sudo -u pi crontab -
 
 # End-of-day gatttool sweep goes in ROOT's crontab so gatttool has Bluetooth
 # access (same reason the service runs as root). Fires hourly; the script only
 # acts at 18:00 Europe/Ljubljana (it checks the timezone itself).
 ( sudo crontab -l 2>/dev/null | grep -v run_gatttool_all; \
-  echo "0 * * * * /usr/bin/python3 $REPO_DIR/run_gatttool_all.py" \
+  echo "0 * * * * set -a; . $ENV_FILE; set +a; /usr/bin/python3 $REPO_DIR/run_gatttool_all.py" \
 ) | sudo crontab -
 echo "    Cron jobs set (deploy 2min, memory 5min, 18:00 Ljubljana gatttool sweep)."
 
-# 6. Camera on/off gatttool aliases in ~/.bashrc (idempotent).
-echo "[6/6] Adding camera aliases to ~/.bashrc..."
+# 7. Camera on/off gatttool aliases in ~/.bashrc (idempotent).
+echo "[7/7] Adding camera aliases to ~/.bashrc..."
 BASHRC="/home/pi/.bashrc"
 if ! grep -qF "# === camera gatttool aliases ===" "$BASHRC" 2>/dev/null; then
     cat >> "$BASHRC" <<'EOF'

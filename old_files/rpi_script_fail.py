@@ -1,12 +1,13 @@
 from datetime import datetime
 from email.message import EmailMessage
+import os
 import smtplib
 import time
 
 msg=EmailMessage()
 body=''
 emailadd='planica.zipline@gmail.com'
-key='bjrwefqlgikznpfm'
+key=os.environ["SMTP_PASS"]
 msg.set_content(body)
 msg['from']=emailadd
 msg['to']=emailadd

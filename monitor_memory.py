@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import os
 import smtplib
 import subprocess
 import logging
@@ -10,7 +11,7 @@ EMAIL_FROM = "planica.zipline@gmail.com"
 EMAIL_TO = "planica.zipline@gmail.com"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
-SMTP_PASS = "bjrwefqlgikznpfm"
+SMTP_PASS = os.environ["SMTP_PASS"]
 
 WARN_MB = 20    # send email warning below this
 REBOOT_MB = 10  # reboot below this

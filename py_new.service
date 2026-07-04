@@ -6,6 +6,7 @@ After=network.target bluetooth.target
 [Service]
 Type=simple
 WorkingDirectory=/home/pi/Desktop
+EnvironmentFile=-/home/pi/Desktop/.env
 ExecStart=/usr/bin/python3 /home/pi/Desktop/py_new.py
 Restart=always
 RestartSec=60

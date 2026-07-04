@@ -6,7 +6,7 @@ import time
 import os
 
 EMAIL = "planica.zipline@gmail.com"
-APP_PASSWORD = "bjrwefqlgikznpfm"
+APP_PASSWORD = os.environ["SMTP_PASS"]
 TO_EMAIL = "planica.zipline@gmail.com"
 TIME_FILE = "/home/pi/Desktop/last_run_time.txt"
 TIME_FORMAT = "%m/%d/%Y, %H:%M:%S"
