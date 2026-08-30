@@ -16,6 +16,13 @@ import smtplib
 from email.message import EmailMessage
 from datetime import datetime
 
+import bt_adapters
+
+# Writes go out on the GATT adapter (the onboard radio), leaving the dongle free
+# to keep scanning for py_new. Python puts this script's own directory on
+# sys.path, so the import works from root's cron with any working directory.
+_SCAN_HCI, GATT_HCI = bt_adapters.resolve()
+
 # Evaluate "now" in Ljubljana time regardless of the system timezone.
 os.environ['TZ'] = 'Europe/Ljubljana'
 time.tzset()
@@ -80,7 +87,8 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
 
     cmd = [
         "timeout", "--foreground", "10",
-        "gatttool", "-t", "random", "-b", mac,
+        "gatttool", "-i", "hci{}".format(GATT_HCI),
+        "-t", "random", "-b", mac,
         "--char-write-req", "-a", "0x2f", "-n", "03170101"
     ]
     try:
@@ -116,6 +124,8 @@ if __name__ == '__main__':
         raise SystemExit(0)
 
     logging.info(u"🌙🌙🌙 18:00 Ljubljana — gatttool sweep over cameras 6-13 🌙🌙🌙")
+
+    logging.info("Bluetooth {}".format(bt_adapters.describe()))
 
     # Cameras 6-13 (indices 5..12), queued exactly like py_new queues a camera.
     sweep_macs = KNOWN_CAMERAS[5:]
