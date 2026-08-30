@@ -41,7 +41,10 @@ KNOWN_CAMERAS = [
     'fb:9a:49:68:6b:f2', 'd5:ed:26:d6:c2:3b', 'dd:30:f0:c9:83:f0', 'e7:5c:2c:64:3c:1c',
     'ff:30:3a:eb:6b:d3', 'ef:be:79:67:78:46', 'f4:8f:f7:98:81:3a', 'f3:f6:b0:75:90:61',
     'ee:d5:4d:88:77:ff', 'ec:0c:e7:74:38:fc', 'ee:ea:a6:26:99:7e', 'e7:95:be:d1:c6:61',
-    'cc:0b:1a:fd:8b:b6'
+    'cc:0b:1a:fd:8b:b6',
+    # cam14 -- had a setup.sh alias but was never in this list, so the
+    # scanner ignored it and only the manual cam14on alias could wake it.
+    'fc:8b:ba:54:66:d1',
 ]
 KNOWN_CAMERAS = [x.lower() for x in KNOWN_CAMERAS]
 CAMERA_MAP = {mac: i + 1 for i, mac in enumerate(KNOWN_CAMERAS)}

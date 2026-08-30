@@ -9,10 +9,29 @@ echo "=== Setting up py_new service and auto-deploy ==="
 
 # 1. Install Python dependencies
 echo "[1/7] Installing Python dependencies..."
-sudo apt install -y python3-pip
-python3 -c "import bluepy" 2>/dev/null || sudo pip3 install bluepy
-python3 -c "import pexpect" 2>/dev/null || sudo pip3 install pexpect
+sudo apt install -y python3-pip usbutils rfkill libglib2.0-dev
+# Bookworm (Debian 12) enforces PEP 668, so pip refuses to modify the system
+# environment without --break-system-packages. Stretch's pip does not know the
+# flag at all, so only pass it where it exists -- this script has to keep
+# working on the old Zero at Planica as well as on the new one.
+PIP_FLAGS=""
+if pip3 install --help 2>/dev/null | grep -q -- "--break-system-packages"; then
+    PIP_FLAGS="--break-system-packages"
+fi
+python3 -c "import bluepy" 2>/dev/null || sudo pip3 install $PIP_FLAGS bluepy
+python3 -c "import pexpect" 2>/dev/null || sudo pip3 install $PIP_FLAGS pexpect
 echo "    Python dependencies installed."
+
+# A freshly plugged USB Bluetooth dongle comes up soft-blocked by rfkill, which
+# makes `hciconfig hciN up` fail with "Operation not possible due to RF-kill".
+# bluetoothd's AutoEnable only helps once the block is cleared.
+echo "    Clearing rfkill blocks..."
+sudo rfkill unblock all 2>/dev/null || true
+for HCI in /sys/class/bluetooth/hci*; do
+    [ -e "$HCI" ] || continue
+    sudo hciconfig "$(basename "$HCI")" up 2>/dev/null || true
+done
+python3 "$REPO_DIR/bt_adapters.py" 2>/dev/null || true
 
 # 2. Prompt once for the Gmail App Password and store it outside git.
 echo "[2/7] Configuring email credentials..."
