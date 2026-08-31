@@ -92,6 +92,34 @@ def resolve():
     return scan, gatt
 
 
+def address(index):
+    """The BD address of hci<index>, or "" if it cannot be read.
+
+    Needed so a disconnect can be aimed at one controller: bluetoothctl acts on
+    its default controller otherwise, which may well be the dongle.
+    """
+    path = os.path.join(SYS_BLUETOOTH, "hci{}".format(index), "address")
+    try:
+        with open(path) as handle:
+            value = handle.read().strip()
+            if value:
+                return value.upper()
+    except (OSError, IOError):
+        pass
+    # Older kernels do not export it in sysfs; fall back to hciconfig.
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["hciconfig", "hci{}".format(index)],
+            stderr=subprocess.STDOUT).decode("utf-8", "ignore")
+        for token in out.split():
+            if len(token) == 17 and token.count(":") == 5:
+                return token.upper()
+    except Exception:
+        pass
+    return ""
+
+
 def describe():
     """One-line summary for the log, so a wrong role assignment is obvious."""
     present = adapters()

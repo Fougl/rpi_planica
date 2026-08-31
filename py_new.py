@@ -16,6 +16,7 @@ import bt_adapters
 # The UB500 on USB scans; the onboard radio does the GATT writes, so a write can
 # never stall the scan. Pin either role with BT_SCAN_HCI / BT_GATT_HCI in .env.
 SCAN_HCI, GATT_HCI = bt_adapters.resolve()
+GATT_ADDR = bt_adapters.address(GATT_HCI)
 
 # === GoPro BLE Busy Query ===
 class StdoutLogger(object):
@@ -156,12 +157,24 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
     else:
         logging.info("Failed for {}, output: {}".format(mac, output.strip()))
 
-    # No bluetoothctl disconnect / bluetooth restart here: gatttool makes its own
-    # raw connection and drops it on exit, so bluetoothd never saw a connection to
-    # disconnect. That call always timed out and its handler then ran
-    # `systemctl restart bluetooth` after EVERY camera -- commit aa3395e removed it
-    # from the sweep for exactly this reason. It is worse now: the scan lives on a
-    # different adapter, and restarting the stack would tear the dongle down mid-scan.
+    # Disconnect on the GATT adapter only. bluetoothctl acts on its default
+    # controller, which may be the dongle, so the controller is selected first.
+    # On failure this resets that one adapter -- never `systemctl restart
+    # bluetooth`, which would take the dongle down mid-scan.
+    try:
+        script = "select {}\ndisconnect {}\nquit\n".format(GATT_ADDR, mac)
+        subprocess.run(["bluetoothctl"],
+                       input=script.encode(),
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL,
+                       timeout=3,
+                       check=False)
+    except Exception as e:
+        logging.error("Failed bluetoothctl disconnect for {}: {}".format(mac, e))
+        logging.warning("Resetting hci{} only; the scan on hci{} keeps running.".format(GATT_HCI, SCAN_HCI))
+        subprocess.run(["hciconfig", "hci{}".format(GATT_HCI), "reset"])
+        time.sleep(2)
+    logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
 # === Scanner Process ===
 def scanner_loop(macs_to_process, attempt_counter):
