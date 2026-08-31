@@ -1,0 +1,15 @@
+[Unit]
+Description=Clone a Bluetooth address onto the onboard radio before bluetoothd
+After=hciuart.service sys-subsystem-bluetooth-devices-hci0.device
+Before=bluetooth.service
+Wants=hciuart.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/local/sbin/bt-clone-addr.sh
+StandardOutput=journal
+
+[Install]
+WantedBy=bluetooth.service

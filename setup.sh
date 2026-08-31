@@ -33,6 +33,26 @@ for HCI in /sys/class/bluetooth/hci*; do
 done
 python3 "$REPO_DIR/bt_adapters.py" 2>/dev/null || true
 
+# Boot-time Bluetooth address clone. Inert unless /etc/bt-clone-addr exists.
+# This is what lets a replacement Pi present the ORIGINAL Pi's address so the
+# cameras accept it with no re-pairing: a camera checks the address it paired
+# with, not any key the host holds (verified 2026-08-31 -- wiping every key on
+# the host changed nothing, while changing the address broke it immediately).
+if [ -f "$REPO_DIR/bt_clone_addr.sh" ]; then
+    echo "    Installing bt-clone-addr service..."
+    sudo install -m 0755 "$REPO_DIR/bt_clone_addr.sh" /usr/local/sbin/bt-clone-addr.sh
+    sudo install -m 0644 "$REPO_DIR/bt-clone-addr.service" /etc/systemd/system/bt-clone-addr.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable bt-clone-addr.service >/dev/null 2>&1
+    if [ -f /etc/bt-clone-addr ]; then
+        echo "    Cloning onboard radio to: $(cat /etc/bt-clone-addr)"
+    else
+        echo "    /etc/bt-clone-addr absent - radio keeps its own address."
+        echo "    To clone the original Planica Pi:"
+        echo "      echo B8:27:EB:91:8B:A6 | sudo tee /etc/bt-clone-addr && sudo reboot"
+    fi
+fi
+
 # 2. Prompt once for the Gmail App Password and store it outside git.
 echo "[2/7] Configuring email credentials..."
 ENV_FILE="$REPO_DIR/.env"
