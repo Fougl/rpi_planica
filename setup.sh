@@ -134,6 +134,8 @@ echo "    Cron jobs set (deploy 2min, memory 5min, 18:00 Ljubljana gatttool swee
 
 # 7. Camera on/off gatttool aliases in ~/.bashrc (idempotent).
 echo "[7/7] Adding camera aliases to ~/.bashrc..."
+# git does not always carry the executable bit across a Windows checkout.
+chmod +x "$REPO_DIR/cam_write.sh" 2>/dev/null || true
 BASHRC="/home/pi/.bashrc"
 # Rewrite the block every time rather than skipping when present: the aliases
 # have been wrong before, and a skip means the fix never reaches an existing Pi.
