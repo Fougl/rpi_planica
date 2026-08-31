@@ -45,11 +45,11 @@ if [ -f "$REPO_DIR/bt_clone_addr.sh" ]; then
     sudo systemctl daemon-reload
     sudo systemctl enable bt-clone-addr.service >/dev/null 2>&1
     if [ -f /etc/bt-clone-addr ]; then
-        echo "    Cloning onboard radio to: $(cat /etc/bt-clone-addr)"
-    else
-        echo "    /etc/bt-clone-addr absent - radio keeps its own address."
-        echo "    To clone the original Planica Pi:"
-        echo "      echo B8:27:EB:91:8B:A6 | sudo tee /etc/bt-clone-addr && sudo reboot"
+        echo "    Cloning onboard radio to: $(cat /etc/bt-clone-addr | grep -oE '([0-9A-F]{2}:){5}[0-9A-F]{2}' | head -1)"
+    elif [ -f "$REPO_DIR/bt_clone_addr.conf" ]; then
+        sudo install -m 0644 "$REPO_DIR/bt_clone_addr.conf" /etc/bt-clone-addr
+        echo "    Installed /etc/bt-clone-addr: $(grep -oE '([0-9A-F]{2}:){5}[0-9A-F]{2}' /etc/bt-clone-addr | head -1)"
+        echo "    Takes effect on next reboot."
     fi
 fi
 
