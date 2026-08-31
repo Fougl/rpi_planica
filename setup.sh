@@ -135,51 +135,54 @@ echo "    Cron jobs set (deploy 2min, memory 5min, 18:00 Ljubljana gatttool swee
 # 7. Camera on/off gatttool aliases in ~/.bashrc (idempotent).
 echo "[7/7] Adding camera aliases to ~/.bashrc..."
 BASHRC="/home/pi/.bashrc"
-if ! grep -qF "# === camera gatttool aliases ===" "$BASHRC" 2>/dev/null; then
-    cat >> "$BASHRC" <<'EOF'
+# Rewrite the block every time rather than skipping when present: the aliases
+# have been wrong before, and a skip means the fix never reaches an existing Pi.
+sed -i '/# === camera gatttool aliases ===/,/^alias cam14off=/d' "$BASHRC" 2>/dev/null
+if true; then
+    cat >> "$BASHRC" <<EOF
 
 # === camera gatttool aliases ===
-alias cam1on='sudo gatttool -t random -b EF:B5:3D:11:F4:31 --char-write-req -a 0x2f -n 03170101'
-alias cam1off='sudo gatttool -t random -b EF:B5:3D:11:F4:31 --char-write-req -a 0x2f -n 03170100'
+alias cam1on='sudo $REPO_DIR/cam_write.sh EF:B5:3D:11:F4:31 03170101'
+alias cam1off='sudo $REPO_DIR/cam_write.sh EF:B5:3D:11:F4:31 03170100'
 
-alias cam2on='sudo gatttool -t random -b D5:ED:26:D6:C2:3B --char-write-req -a 0x2f -n 03170101'
-alias cam2off='sudo gatttool -t random -b D5:ED:26:D6:C2:3B --char-write-req -a 0x2f -n 03170100'
+alias cam2on='sudo $REPO_DIR/cam_write.sh D5:ED:26:D6:C2:3B 03170101'
+alias cam2off='sudo $REPO_DIR/cam_write.sh D5:ED:26:D6:C2:3B 03170100'
 
-alias cam3on='sudo gatttool -t random -b DD:30:F0:C9:83:F0 --char-write-req -a 0x2f -n 03170101'
-alias cam3off='sudo gatttool -t random -b DD:30:F0:C9:83:F0 --char-write-req -a 0x2f -n 03170100'
+alias cam3on='sudo $REPO_DIR/cam_write.sh DD:30:F0:C9:83:F0 03170101'
+alias cam3off='sudo $REPO_DIR/cam_write.sh DD:30:F0:C9:83:F0 03170100'
 
-alias cam4on='sudo gatttool -t random -b E7:5C:2C:64:3C:1C --char-write-req -a 0x2f -n 03170101'
-alias cam4off='sudo gatttool -t random -b E7:5C:2C:64:3C:1C --char-write-req -a 0x2f -n 03170100'
+alias cam4on='sudo $REPO_DIR/cam_write.sh E7:5C:2C:64:3C:1C 03170101'
+alias cam4off='sudo $REPO_DIR/cam_write.sh E7:5C:2C:64:3C:1C 03170100'
 
-alias cam5on='sudo gatttool -t random -b FF:30:3A:EB:6B:D3 --char-write-req -a 0x2f -n 03170101'
-alias cam5off='sudo gatttool -t random -b FF:30:3A:EB:6B:D3 --char-write-req -a 0x2f -n 03170100'
+alias cam5on='sudo $REPO_DIR/cam_write.sh FF:30:3A:EB:6B:D3 03170101'
+alias cam5off='sudo $REPO_DIR/cam_write.sh FF:30:3A:EB:6B:D3 03170100'
 
-alias cam6on='sudo gatttool -t random -b EF:BE:79:67:78:46 --char-write-req -a 0x2f -n 03170101'
-alias cam6off='sudo gatttool -t random -b EF:BE:79:67:78:46 --char-write-req -a 0x2f -n 03170100'
+alias cam6on='sudo $REPO_DIR/cam_write.sh EF:BE:79:67:78:46 03170101'
+alias cam6off='sudo $REPO_DIR/cam_write.sh EF:BE:79:67:78:46 03170100'
 
-alias cam7on='sudo gatttool -t random -b F4:8F:F7:98:81:3A --char-write-req -a 0x2f -n 03170101'
-alias cam7off='sudo gatttool -t random -b F4:8F:F7:98:81:3A --char-write-req -a 0x2f -n 03170100'
+alias cam7on='sudo $REPO_DIR/cam_write.sh F4:8F:F7:98:81:3A 03170101'
+alias cam7off='sudo $REPO_DIR/cam_write.sh F4:8F:F7:98:81:3A 03170100'
 
-alias cam8on='sudo gatttool -t random -b F3:F6:B0:75:90:61 --char-write-req -a 0x2f -n 03170101'
-alias cam8off='sudo gatttool -t random -b F3:F6:B0:75:90:61 --char-write-req -a 0x2f -n 03170100'
+alias cam8on='sudo $REPO_DIR/cam_write.sh F3:F6:B0:75:90:61 03170101'
+alias cam8off='sudo $REPO_DIR/cam_write.sh F3:F6:B0:75:90:61 03170100'
 
-alias cam9on='sudo gatttool -t random -b EE:D5:4D:88:77:FF --char-write-req -a 0x2f -n 03170101'
-alias cam9off='sudo gatttool -t random -b EE:D5:4D:88:77:FF --char-write-req -a 0x2f -n 03170100'
+alias cam9on='sudo $REPO_DIR/cam_write.sh EE:D5:4D:88:77:FF 03170101'
+alias cam9off='sudo $REPO_DIR/cam_write.sh EE:D5:4D:88:77:FF 03170100'
 
-alias cam10on='sudo gatttool -t random -b EC:0C:E7:74:38:FC --char-write-req -a 0x2f -n 03170101'
-alias cam10off='sudo gatttool -t random -b EC:0C:E7:74:38:FC --char-write-req -a 0x2f -n 03170100'
+alias cam10on='sudo $REPO_DIR/cam_write.sh EC:0C:E7:74:38:FC 03170101'
+alias cam10off='sudo $REPO_DIR/cam_write.sh EC:0C:E7:74:38:FC 03170100'
 
-alias cam11on='sudo gatttool -t random -b EE:EA:A6:26:99:7E --char-write-req -a 0x2f -n 03170101'
-alias cam11off='sudo gatttool -t random -b EE:EA:A6:26:99:7E --char-write-req -a 0x2f -n 03170100'
+alias cam11on='sudo $REPO_DIR/cam_write.sh EE:EA:A6:26:99:7E 03170101'
+alias cam11off='sudo $REPO_DIR/cam_write.sh EE:EA:A6:26:99:7E 03170100'
 
-alias cam12on='sudo gatttool -t random -b E7:95:BE:D1:C6:61 --char-write-req -a 0x2f -n 03170101'
-alias cam12off='sudo gatttool -t random -b E7:95:BE:D1:C6:61 --char-write-req -a 0x2f -n 03170100'
+alias cam12on='sudo $REPO_DIR/cam_write.sh E7:95:BE:D1:C6:61 03170101'
+alias cam12off='sudo $REPO_DIR/cam_write.sh E7:95:BE:D1:C6:61 03170100'
 
-alias cam13on='sudo gatttool -t random -b CC:0B:1A:FD:8B:B6 --char-write-req -a 0x2f -n 03170101'
-alias cam13off='sudo gatttool -t random -b CC:0B:1A:FD:8B:B6 --char-write-req -a 0x2f -n 03170100'
+alias cam13on='sudo $REPO_DIR/cam_write.sh CC:0B:1A:FD:8B:B6 03170101'
+alias cam13off='sudo $REPO_DIR/cam_write.sh CC:0B:1A:FD:8B:B6 03170100'
 
-alias cam14on='sudo gatttool -t random -b FC:8B:BA:54:66:D1 --char-write-req -a 0x2f -n 03170101'
-alias cam14off='sudo gatttool -t random -b FC:8B:BA:54:66:D1 --char-write-req -a 0x2f -n 03170100'
+alias cam14on='sudo $REPO_DIR/cam_write.sh FC:8B:BA:54:66:D1 03170101'
+alias cam14off='sudo $REPO_DIR/cam_write.sh FC:8B:BA:54:66:D1 03170100'
 EOF
     echo "    Aliases added to $BASHRC."
 else
