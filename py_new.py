@@ -251,6 +251,19 @@ if __name__ == '__main__':
                     logging.warning(u"❌❌❌❌❌CAMERA {} ({}) FAILED 5 TIMES.❌❌❌❌❌❌❌❌❌❌".format(cam_num, mac))
                     send_failure_email(cam_num)
                     attempt_counter[mac] = 0
+                    # Stop retrying this camera. Previously it only reset the
+                    # counter, so the loop immediately began another five
+                    # attempts and another email, indefinitely. That never
+                    # showed on the old single-radio Pi because gatttool broke
+                    # the scan, last_seen went stale, and scanner_loop removed
+                    # the camera as "not visible" after 2 minutes -- one email,
+                    # by accident. With the dongle scanning uninterrupted the
+                    # camera is never falsely considered gone, so the loop ran
+                    # forever (87 attempts, 15 emails, observed 2026-09-02).
+                    # run_gatttool_all.py already does this.
+                    # A later weak->strong transition re-queues the camera, so
+                    # a recovered camera is still picked up.
+                    del macs_to_process[mac]
                     continue
 
                 attempt_counter[mac] = attempt_counter.get(mac, 0) + 1
