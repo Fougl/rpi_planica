@@ -18,6 +18,15 @@ import bt_adapters
 SCAN_HCI, GATT_HCI = bt_adapters.resolve()
 GATT_ADDR = bt_adapters.address(GATT_HCI)
 
+# The dongle hears roughly 15 dB further than the onboard radio the absent/weak/
+# strong logic was tuned against. A camera at the top of the line is still heard
+# by it, so last_seen keeps refreshing, the camera never goes absent, and it can
+# never be re-armed -- nothing fires when the rider comes down. Sightings below
+# this floor are dropped before the state machine sees them, so the dongle hears
+# like the old radio did. Override with BT_SCAN_FLOOR in .env; diag.sh's census
+# gives the real number.
+SCAN_FLOOR = int(os.environ.get("BT_SCAN_FLOOR", "-85"))
+
 # === GoPro BLE Busy Query ===
 class StdoutLogger(object):
     def write(self, data):
@@ -201,6 +210,8 @@ def scanner_loop(macs_to_process, attempt_counter):
                 mac = dev.addr.lower()
                 if mac not in KNOWN_CAMERAS:
                     continue
+                if dev.rssi < SCAN_FLOOR:
+                    continue  # too faint for the old radio; treat as not seen
 
                 rssi = dev.rssi
                 cam_num = CAMERA_MAP.get(mac, mac)
@@ -236,6 +247,7 @@ def scanner_loop(macs_to_process, attempt_counter):
 if __name__ == '__main__':
     logging.info(u"▶▶▶▶▶▶▶▶Script started.▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶")
     logging.info("Bluetooth {}".format(bt_adapters.describe()))
+    logging.info("Scan floor: {} dBm (sightings below this are ignored)".format(SCAN_FLOOR))
     manager = Manager()
     macs_to_process = manager.dict()
     attempt_counter = manager.dict()
