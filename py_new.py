@@ -192,12 +192,26 @@ def scanner_loop(macs_to_process, attempt_counter):
     first_rssi = {}
     rssi_state = {}
     absence_time = {}
+    # Logging only -- none of these feed the state machine below.
+    last_rssi = {}        # last RSSI that counted, for the ABSENT line
+    absent_logged = set() # cameras already reported ABSENT this absence
+    fade_logged_at = {}   # per-camera rate limit for the FADED line
 
     while True:
         try:
             devices = scanner.scan(4)
             now = datetime.now()
-            
+
+            # Report the absent transition once. This is the same 5-minute test
+            # the state machine applies on the next sighting, logged when it
+            # becomes true instead of silently, so the log shows whether a
+            # camera ever became eligible again.
+            for mac, prev in list(last_seen.items()):
+                if (now - prev) > timedelta(minutes=5) and mac not in absent_logged:
+                    absent_logged.add(mac)
+                    logging.info("Camera {} ({}) is now ABSENT - unseen {:.0f}min, last RSSI={} - will re-arm on return".format(
+                        CAMERA_MAP.get(mac, mac), mac, (now - prev).total_seconds() / 60.0, last_rssi.get(mac)))
+
             for mac in list(macs_to_process.keys()):
                 prev = last_seen.get(mac)
                 if prev and (now - prev) > timedelta(minutes=2):
@@ -211,9 +225,21 @@ def scanner_loop(macs_to_process, attempt_counter):
                 if mac not in KNOWN_CAMERAS:
                     continue
                 if dev.rssi < SCAN_FLOOR:
-                    continue  # too faint for the old radio; treat as not seen
+                    # Too faint for the old radio; treat as not seen. Log the
+                    # fade (at most once a minute per camera) -- this is the
+                    # moment the old radio would have lost it, and the RSSI
+                    # here is what tunes BT_SCAN_FLOOR.
+                    if mac in last_seen and mac not in absent_logged:
+                        t = fade_logged_at.get(mac)
+                        if t is None or (now - t).total_seconds() > 60:
+                            fade_logged_at[mac] = now
+                            logging.info("Camera {} ({}) faded below floor (RSSI={} < {}) - counting as unseen".format(
+                                CAMERA_MAP.get(mac, mac), mac, dev.rssi, SCAN_FLOOR))
+                    continue
 
                 rssi = dev.rssi
+                last_rssi[mac] = rssi
+                absent_logged.discard(mac)
                 cam_num = CAMERA_MAP.get(mac, mac)
                 prev = last_seen.get(mac)
 
