@@ -2,6 +2,7 @@
 from multiprocessing import Process, Manager
 from datetime import datetime, timedelta
 import os
+import json
 import time
 import subprocess
 import logging
@@ -116,6 +117,45 @@ CAMERA_MAP = {mac: i + 1 for i, mac in enumerate(KNOWN_CAMERAS)}
 STRONG_DBM = -80
 COOLDOWN = timedelta(minutes=10)
 
+# The old script kept these timestamps in time.txt and ran from cron, so the
+# state survived every run. Holding them only in memory meant a service restart
+# made every camera look like it had been away forever, and the whole rig got
+# woken on startup. Persist them.
+STATE_FILE = Path("/home/pi/Desktop/last_strong.json")
+STATE_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def load_last_strong():
+    try:
+        with STATE_FILE.open() as f:
+            raw = json.load(f)
+    except Exception:
+        # No state yet. Treat every camera as just-seen-strong, so a first run
+        # on a fresh card never wakes everything at once.
+        now = datetime.now()
+        logging.info("No {} yet - starting with all cameras on cooldown.".format(STATE_FILE.name))
+        return {mac: now for mac in KNOWN_CAMERAS}
+
+    out = {}
+    for mac, ts in raw.items():
+        if mac in CAMERA_MAP:
+            try:
+                out[mac] = datetime.strptime(ts, STATE_FMT)
+            except ValueError:
+                pass
+    logging.info("Loaded last-strong times for {} cameras from {}.".format(len(out), STATE_FILE.name))
+    return out
+
+
+def save_last_strong(last_strong):
+    try:
+        tmp = STATE_FILE.with_suffix(".tmp")
+        with tmp.open("w") as f:
+            json.dump({m: t.strftime(STATE_FMT) for m, t in last_strong.items()}, f)
+        tmp.replace(STATE_FILE)
+    except Exception as e:
+        logging.warning("Could not write {}: {}".format(STATE_FILE, e))
+
 # === Email Failure Alert ===
 def send_failure_email(camera_number):
     msg = EmailMessage()
@@ -190,7 +230,9 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
 def scanner_loop(macs_to_process, attempt_counter):
     scanner = Scanner(SCAN_HCI)
     last_seen = {}      # any sighting -- only drops stale entries from the queue
-    last_strong = {}    # sightings at/above STRONG_DBM -- this drives the trigger
+    last_strong = load_last_strong()   # at/above STRONG_DBM -- drives the trigger
+    last_flush = datetime.now()
+    dirty = False
 
     while True:
         try:
@@ -223,6 +265,7 @@ def scanner_loop(macs_to_process, attempt_counter):
 
                 prev_strong = last_strong.get(mac)
                 last_strong[mac] = now
+                dirty = True
 
                 if prev_strong is None or (now - prev_strong) > COOLDOWN:
                     ago = "never" if prev_strong is None else "{:.0f}min ago".format(
@@ -230,6 +273,16 @@ def scanner_loop(macs_to_process, attempt_counter):
                     logging.info("Camera {} ({}) STRONG at RSSI={} (last strong: {}) — trigger".format(
                         cam_num, mac, rssi, ago))
                     macs_to_process[mac] = 1
+                    save_last_strong(last_strong)
+                    last_flush = now
+                    dirty = False
+
+            # Flush at most once a minute otherwise -- the cooldown is 10
+            # minutes, so this granularity costs nothing and spares the SD card.
+            if dirty and (now - last_flush).total_seconds() > 60:
+                save_last_strong(last_strong)
+                last_flush = now
+                dirty = False
         except Exception as e:
             # Back off instead of spinning. A rejected 'scanend' (another process
             # holding the adapter) used to retry ~30x/second, flooding the log and
