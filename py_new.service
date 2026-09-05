@@ -9,7 +9,7 @@ WorkingDirectory=/home/pi/Desktop
 EnvironmentFile=-/home/pi/Desktop/.env
 ExecStart=/usr/bin/python3 /home/pi/Desktop/py_new.py
 Restart=always
-RestartSec=60
+RestartSec=10
 StandardOutput=journal
 StandardError=journal
 

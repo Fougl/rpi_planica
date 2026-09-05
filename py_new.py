@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from multiprocessing import Process, Manager
+from multiprocessing import Process, Manager, Value
 from datetime import datetime, timedelta
 import os
 import time
@@ -26,6 +26,15 @@ GATT_ADDR = bt_adapters.address(GATT_HCI)
 # like the old radio did. Override with BT_SCAN_FLOOR in .env; diag.sh's census
 # gives the real number.
 SCAN_FLOOR = int(os.environ.get("BT_SCAN_FLOOR", "-85"))
+
+# bluepy's scan() reads from bluepy-helper with a blocking read. When the helper
+# wedges (the "Failed to execute management command 'scanend'" state) that read
+# never returns: nothing is raised, so `except Exception` never fires, nothing is
+# logged, and systemd still reports the service active because the parent process
+# is alive. The scanner is then dead until someone power-cycles the Pi -- observed
+# 2026-09-04 18:11 -> 2026-09-05 14:49, a full morning with no camera triggered.
+# A scan takes ~4 s, so nothing completing for this long means wedged, not quiet.
+SCAN_STALE_AFTER = int(os.environ.get("BT_SCAN_STALE_AFTER", "120"))
 
 # === GoPro BLE Busy Query ===
 class StdoutLogger(object):
@@ -186,7 +195,7 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
 # === Scanner Process ===
-def scanner_loop(macs_to_process, attempt_counter):
+def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     scanner = Scanner(SCAN_HCI)
     last_seen = {}
     first_rssi = {}
@@ -196,11 +205,16 @@ def scanner_loop(macs_to_process, attempt_counter):
     last_rssi = {}        # last RSSI that counted, for the ABSENT line
     absent_logged = set() # cameras already reported ABSENT this absence
     fade_logged_at = {}   # per-camera rate limit for the FADED line
+    last_census = None    # rate limit for the "scan alive" line
 
     while True:
         try:
             devices = scanner.scan(4)
             now = datetime.now()
+            # Proof of life for the watchdog in the main controller. Only a
+            # scan that actually returned refreshes this.
+            heartbeat.value = time.time()
+            visible = {}
 
             # Report the absent transition once. This is the same 5-minute test
             # the state machine applies on the next sighting, logged when it
@@ -224,6 +238,7 @@ def scanner_loop(macs_to_process, attempt_counter):
                 mac = dev.addr.lower()
                 if mac not in KNOWN_CAMERAS:
                     continue
+                visible[mac] = dev.rssi
                 if dev.rssi < SCAN_FLOOR:
                     # Too faint for the old radio; treat as not seen. Log the
                     # fade (at most once a minute per camera) -- this is the
@@ -266,6 +281,19 @@ def scanner_loop(macs_to_process, attempt_counter):
                         absence_time[mac] = None
 
                 last_seen[mac] = now
+
+            # Once a minute, say what the radio can actually hear. Without this
+            # a healthy-but-quiet scanner and a wedged one are indistinguishable
+            # in the log -- the state machine only writes on transitions, so a
+            # dead scan and a day where nothing moved look identical. The RSSIs
+            # here are also the numbers that tune BT_SCAN_FLOOR.
+            if last_census is None or (now - last_census).total_seconds() >= 60:
+                last_census = now
+                heard = ", ".join(
+                    "cam{}={}".format(CAMERA_MAP.get(m, m), r)
+                    for m, r in sorted(visible.items(), key=lambda kv: kv[1], reverse=True))
+                logging.info("scan alive - heard {} of {}: {}".format(
+                    len(visible), len(KNOWN_CAMERAS), heard or "none"))
         except Exception as e:
             logging.warning("Scan failed: {}".format(e))
 
@@ -278,11 +306,26 @@ if __name__ == '__main__':
     macs_to_process = manager.dict()
     attempt_counter = manager.dict()
 
-    scanner_proc = Process(target=scanner_loop, args=(macs_to_process, attempt_counter,))
+    heartbeat = Value('d', time.time())
+    scanner_proc = Process(target=scanner_loop, args=(macs_to_process, attempt_counter, heartbeat))
     scanner_proc.start()
 
     try:
         while True:
+            # Watchdog. Two ways the scanner stops while systemd still reports
+            # the service active: bluepy blocks forever inside scan(), or the
+            # child process dies and this loop keeps spinning over an empty
+            # queue. Either way no camera is triggered again until the Pi is
+            # power-cycled by hand. Exit non-zero and let Restart=always bring
+            # the service back with a fresh bluepy-helper.
+            stalled = time.time() - heartbeat.value
+            if not scanner_proc.is_alive() or stalled > SCAN_STALE_AFTER:
+                logging.error("Scanner stalled: {:.0f}s since the last completed scan, alive={} - restarting service".format(
+                    stalled, scanner_proc.is_alive()))
+                scanner_proc.terminate()
+                scanner_proc.join(5)
+                os._exit(1)
+
             for mac in list(macs_to_process.keys()):
                 if attempt_counter.get(mac, 0) >= 5:
                     cam_num = CAMERA_MAP.get(mac, mac)
@@ -308,6 +351,9 @@ if __name__ == '__main__':
                 #Process(target=run_gatttool, args=(mac, macs_to_process, attempt_counter)).start()
                 run_gatttool(mac, macs_to_process, attempt_counter)
                 time.sleep(7)
+
+            # Nothing queued: without this the loop spins a core at 100%.
+            time.sleep(1)
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
