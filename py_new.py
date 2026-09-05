@@ -18,15 +18,6 @@ import bt_adapters
 SCAN_HCI, GATT_HCI = bt_adapters.resolve()
 GATT_ADDR = bt_adapters.address(GATT_HCI)
 
-# The dongle hears roughly 15 dB further than the onboard radio the absent/weak/
-# strong logic was tuned against. A camera at the top of the line is still heard
-# by it, so last_seen keeps refreshing, the camera never goes absent, and it can
-# never be re-armed -- nothing fires when the rider comes down. Sightings below
-# this floor are dropped before the state machine sees them, so the dongle hears
-# like the old radio did. Override with BT_SCAN_FLOOR in .env; diag.sh's census
-# gives the real number.
-SCAN_FLOOR = int(os.environ.get("BT_SCAN_FLOOR", "-85"))
-
 # bluepy's scan() reads from bluepy-helper with a blocking read. When the helper
 # wedges (the "Failed to execute management command 'scanend'" state) that read
 # never returns: nothing is raised, so `except Exception` never fires, nothing is
@@ -204,7 +195,6 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     # Logging only -- none of these feed the state machine below.
     last_rssi = {}        # last RSSI that counted, for the ABSENT line
     absent_logged = set() # cameras already reported ABSENT this absence
-    fade_logged_at = {}   # per-camera rate limit for the FADED line
     last_census = None    # rate limit for the "scan alive" line
 
     while True:
@@ -239,18 +229,6 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                 if mac not in KNOWN_CAMERAS:
                     continue
                 visible[mac] = dev.rssi
-                if dev.rssi < SCAN_FLOOR:
-                    # Too faint for the old radio; treat as not seen. Log the
-                    # fade (at most once a minute per camera) -- this is the
-                    # moment the old radio would have lost it, and the RSSI
-                    # here is what tunes BT_SCAN_FLOOR.
-                    if mac in last_seen and mac not in absent_logged:
-                        t = fade_logged_at.get(mac)
-                        if t is None or (now - t).total_seconds() > 60:
-                            fade_logged_at[mac] = now
-                            logging.info("Camera {} ({}) faded below floor (RSSI={} < {}) - counting as unseen".format(
-                                CAMERA_MAP.get(mac, mac), mac, dev.rssi, SCAN_FLOOR))
-                    continue
 
                 rssi = dev.rssi
                 last_rssi[mac] = rssi
@@ -286,7 +264,7 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
             # a healthy-but-quiet scanner and a wedged one are indistinguishable
             # in the log -- the state machine only writes on transitions, so a
             # dead scan and a day where nothing moved look identical. The RSSIs
-            # here are also the numbers that tune BT_SCAN_FLOOR.
+            # here are the RSSIs the radio is actually reporting.
             if last_census is None or (now - last_census).total_seconds() >= 60:
                 last_census = now
                 heard = ", ".join(
@@ -301,7 +279,6 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
 if __name__ == '__main__':
     logging.info(u"▶▶▶▶▶▶▶▶Script started.▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶")
     logging.info("Bluetooth {}".format(bt_adapters.describe()))
-    logging.info("Scan floor: {} dBm (sightings below this are ignored)".format(SCAN_FLOOR))
     manager = Manager()
     macs_to_process = manager.dict()
     attempt_counter = manager.dict()
