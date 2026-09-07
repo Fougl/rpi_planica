@@ -13,8 +13,8 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 SMTP_PASS = os.environ["SMTP_PASS"]
 
-WARN_MB = 20    # send email warning below this
-REBOOT_MB = 10  # reboot below this
+WARN_MB = 80    # send email warning below this
+REBOOT_MB = 40  # reboot below this
 
 log_file = Path("/home/pi/memory_monitor.log")
 logging.basicConfig(
