@@ -96,43 +96,48 @@ echo "    Service installed and started."
 echo "[4/7] Creating deploy script..."
 cat > $DEPLOY_SCRIPT <<EOF
 #!/bin/bash
-# Auto-deploy, from cron every 2 minutes. Restarts the service ONLY when HEAD
-# actually moved.
+# Auto-deploy, from cron every 2 minutes.
 #
-# The old version restarted whenever HEAD != origin/master -- including when
-# the pull that was supposed to close that gap had just failed. That pull
-# fails on any Pi where an incoming commit adds a file the Pi already has
-# untracked, and commit 3e88a0f added __pycache__/*.pyc, which every Pi that
-# has ever run py_new.py has on disk. So: pull aborts, HEAD never moves,
-# restart runs anyway, every 2 minutes, forever. It ran that way from
-# 2026-09-07 17:44 to 2026-09-12 -- about 3400 restarts -- and nothing
-# reported it: systemd said active, deploy.log said "Deployed <same sha>" at
-# every attempt, and the service log looked healthy between restarts. No
-# camera fired in all that time, because the scanner's state lives in memory
-# and the 5-minute absence that re-arms a camera cannot elapse inside a
-# 2-minute process.
+# The Pi is a MIRROR of origin/master. It is not a place to edit code.
+#
+# `git pull` is deliberately NOT used here. Pull refuses to overwrite an
+# untracked file or a local edit, and aborts the whole update when it hits
+# one -- and that refusal caused the 2026-09-07 -> 2026-09-12 outage. A commit
+# added __pycache__/*.pyc, which every Pi already has on disk because Python
+# writes it the first time py_new.py runs. The pull aborted, HEAD never moved,
+# and the old deploy.sh restarted the service anyway: every 2 minutes for five
+# days, ~3400 times, no camera firing, no error logged anywhere. systemd said
+# active and deploy.log said "Deployed <same sha>" at every attempt.
+#
+# `git fetch` + `git reset --hard` cannot fail that way. Whatever is on the Pi
+# is replaced by whatever is on GitHub, untracked collisions included, so no
+# future push can wedge a Pi no matter what it contains. Anything that must
+# survive a deploy -- .env, new_log.log, last_strong.json -- is in .gitignore,
+# and reset does not touch ignored files.
+#
+# The trade, on purpose: edits made directly on the Pi are destroyed at the
+# next deploy. Change code in git, not on the Pi.
 cd $REPO_DIR || exit 1
 LOG=/home/pi/deploy.log
 
 BEFORE=\$(git rev-parse HEAD)
 
-if ! git fetch origin master 2>/dev/null; then
+if ! git fetch -q origin master 2>/dev/null; then
     echo "\$(date): fetch failed - no network? Service left alone." >> \$LOG
     exit 1
 fi
 
-[ "\$BEFORE" = "\$(git rev-parse origin/master)" ] && exit 0
+TARGET=\$(git rev-parse origin/master)
+[ "\$BEFORE" = "\$TARGET" ] && exit 0
 
-# --ff-only: a local commit on the Pi has to fail loudly here. A plain pull
-# would make a merge commit, and HEAD would then differ from origin/master by
-# construction -- the same restart loop by another route.
-OUT=\$(git pull --ff-only origin master 2>&1)
-AFTER=\$(git rev-parse HEAD)
-
-if [ "\$BEFORE" = "\$AFTER" ]; then
-    echo "\$(date): PULL FAILED - still on \$(git rev-parse --short HEAD), NOT restarting: \$(echo "\$OUT" | tr '\n' ' ' | cut -c1-300)" >> \$LOG
+if ! git reset -q --hard "\$TARGET" 2>> \$LOG; then
+    echo "\$(date): RESET FAILED - still on \$(git rev-parse --short HEAD), NOT restarting" >> \$LOG
     exit 1
 fi
+
+# Restart only if HEAD actually moved. The old script restarted whenever it
+# thought it was behind, without ever checking the update had worked.
+[ "\$(git rev-parse HEAD)" = "\$BEFORE" ] && exit 0
 
 sudo systemctl restart $SERVICE_NAME
 echo "\$(date): Deployed \$(git rev-parse --short HEAD)" >> \$LOG
