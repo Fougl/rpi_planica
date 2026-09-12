@@ -37,7 +37,15 @@ SCAN_STALE_AFTER = int(os.environ.get("BT_SCAN_STALE_AFTER", "120"))
 # healthy. A BLE radio anywhere near people hears *something*, so hearing no
 # device at all -- not no camera, no device -- for this long means the radio is
 # deaf, and that is worth an email.
-RADIO_DEAF_AFTER = int(os.environ.get("BT_RADIO_DEAF_AFTER", "600"))
+# Resetting is cheap, silent and harmless, so do it fast: the radio normally
+# hears 27-38 BLE devices in every 4-second scan, so two empty scans in a row
+# already means the controller has latched. A false positive costs two seconds
+# and a log line, so there is no reason to wait longer than that.
+RADIO_QUIET_RESET = int(os.environ.get("BT_RADIO_QUIET_RESET", "10"))
+
+# Mailing is the expensive part, so that waits until the reset has clearly
+# failed to fix it.
+RADIO_DEAF_AFTER = int(os.environ.get("BT_RADIO_DEAF_AFTER", "300"))
 
 # And keep saying so. A single alert per episode means one email on the first
 # day and silence for the rest of the outage.
@@ -229,7 +237,7 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
 # === Scan Adapter Reset ===
-def reset_scan_adapter(why):
+def reset_scan_adapter(why, mail=True):
     """Power-cycle the scanning adapter. Never touches the GATT adapter.
 
     A process killed while a scan is enabled leaves the controller latched:
@@ -317,6 +325,7 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     deaf_since = None              # when this deaf episode started, None if hearing
     deaf_last_alert = 0.0          # last deaf email, so the reminders are paced
     deaf_alerts = 0                # how many reminders this episode
+    last_reset = 0.0               # paces the silent recovery resets
 
     while True:
         try:
@@ -345,6 +354,15 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                 last_any_device = time.time()
             else:
                 quiet = time.time() - last_any_device
+
+                # Fast, silent recovery. Retried on the same cadence for as
+                # long as it stays deaf.
+                if quiet > RADIO_QUIET_RESET and (time.time() - last_reset) > RADIO_QUIET_RESET:
+                    last_reset = time.time()
+                    logging.warning("hci{} heard nothing for {:.0f}s - resetting it".format(
+                        SCAN_HCI, quiet))
+                    reset_scan_adapter("no BLE device heard for {:.0f}s".format(quiet), mail=False)
+
                 # Repeat while it stays deaf. One alert per episode was the
                 # original design and it is wrong: if the reset does not fix it,
                 # a single email on the first day is followed by silence for as
@@ -363,7 +381,6 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                     deaf_alerts += 1
                     logging.error("RADIO DEAF (alert #{}) - not one BLE device of any kind on hci{} for {:.0f}min. The scan is completing and returning nothing; the service looks healthy and no camera can ever be triggered.".format(
                         deaf_alerts, SCAN_HCI, quiet / 60.0))
-                    reset_scan_adapter("radio deaf for {:.0f}min - clearing a possible stuck scan".format(quiet / 60.0))
                     send_alert(
                         "Planica Pi: radio deaf on hci{} ({:.0f}min, alert #{})".format(
                             SCAN_HCI, quiet / 60.0, deaf_alerts),
