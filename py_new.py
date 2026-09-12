@@ -39,6 +39,10 @@ SCAN_STALE_AFTER = int(os.environ.get("BT_SCAN_STALE_AFTER", "120"))
 # deaf, and that is worth an email.
 RADIO_DEAF_AFTER = int(os.environ.get("BT_RADIO_DEAF_AFTER", "600"))
 
+# And keep saying so. A single alert per episode means one email on the first
+# day and silence for the rest of the outage.
+DEAF_REMIND = int(os.environ.get("BT_DEAF_REMIND", "3600"))
+
 # === GoPro BLE Busy Query ===
 class StdoutLogger(object):
     def write(self, data):
@@ -330,7 +334,9 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     absent_logged = set() # cameras already reported ABSENT this absence
     last_census = None    # rate limit for the "scan alive" line
     last_any_device = time.time()  # any BLE device at all, camera or not
-    deaf_reported = False          # one email per deaf episode, not one a scan
+    deaf_since = None              # when this deaf episode started, None if hearing
+    deaf_last_alert = 0.0          # last deaf email, so the reminders are paced
+    deaf_alerts = 0                # how many reminders this episode
 
     while True:
         try:
@@ -344,23 +350,55 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
             # last_seen, rssi_state or macs_to_process, so detection behaves
             # exactly as before whether this fires or not.
             if devices:
-                if deaf_reported:
-                    logging.info("Radio hearing again - {} BLE devices this scan".format(len(devices)))
-                    deaf_reported = False
+                if deaf_since is not None:
+                    down = (time.time() - deaf_since) / 60.0
+                    logging.error("RADIO RECOVERED on hci{} after {:.0f}min deaf - {} BLE devices this scan".format(
+                        SCAN_HCI, down, len(devices)))
+                    send_alert(
+                        "Planica Pi: radio RECOVERED on hci{}".format(SCAN_HCI),
+                        "hci{} is hearing again -- {} BLE devices in this scan, after "
+                        "{:.0f} minutes deaf.\n\nCameras can be triggered again.\n\n{}\n".format(
+                            SCAN_HCI, len(devices), down,
+                            datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                    deaf_since = None
+                    deaf_alerts = 0
                 last_any_device = time.time()
-            elif not deaf_reported and (time.time() - last_any_device) > RADIO_DEAF_AFTER:
-                deaf_reported = True
-                mins = (time.time() - last_any_device) / 60.0
-                logging.error("RADIO DEAF - not one BLE device of any kind on hci{} for {:.0f}min. The scan is completing and returning nothing; the service looks healthy and no camera can ever be triggered.".format(SCAN_HCI, mins))
-                reset_scan_adapter("radio went deaf - clearing a possible stuck scan")
-                send_alert(
-                    "Planica Pi: Bluetooth radio deaf on hci{}".format(SCAN_HCI),
-                    "The scanner on hci{} has completed scans for {:.0f} minutes without "
-                    "hearing a single BLE device of any kind -- not a camera, not a phone, "
-                    "nothing.\n\nThe service is running and looks healthy in the log. No "
-                    "camera can be triggered in this state.\n\nCheck the dongle: "
-                    "bash /home/pi/Desktop/bt_diag.sh\n\n{}".format(
-                        SCAN_HCI, mins, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            else:
+                quiet = time.time() - last_any_device
+                # Repeat while it stays deaf. One alert per episode was the
+                # original design and it is wrong: if the reset does not fix it,
+                # a single email on the first day is followed by silence for as
+                # long as it stays broken -- which is the exact shape of the
+                # 2026-09-06 -> 09-12 outage this exists to prevent.
+                # deaf_since is None means this is the first alert of the episode:
+                # fire it the moment the threshold is crossed, then pace the rest.
+                # Gating the first one on DEAF_REMIND too would have worked only
+                # because the epoch is a big number -- a test with a small clock
+                # caught it.
+                first = deaf_since is None
+                if quiet > RADIO_DEAF_AFTER and (first or (time.time() - deaf_last_alert) > DEAF_REMIND):
+                    if deaf_since is None:
+                        deaf_since = last_any_device
+                    deaf_last_alert = time.time()
+                    deaf_alerts += 1
+                    logging.error("RADIO DEAF (alert #{}) - not one BLE device of any kind on hci{} for {:.0f}min. The scan is completing and returning nothing; the service looks healthy and no camera can ever be triggered.".format(
+                        deaf_alerts, SCAN_HCI, quiet / 60.0))
+                    reset_scan_adapter("radio deaf for {:.0f}min - clearing a possible stuck scan".format(quiet / 60.0))
+                    send_alert(
+                        "Planica Pi: radio deaf on hci{} ({:.0f}min, alert #{})".format(
+                            SCAN_HCI, quiet / 60.0, deaf_alerts),
+                        "The scanner on hci{} has completed scans for {:.0f} minutes without "
+                        "hearing a single BLE device of any kind -- not a camera, not a phone, "
+                        "nothing.\n\nThe service is running and looks healthy in the log. No "
+                        "camera can be triggered in this state.\n\nThe adapter has just been "
+                        "reset; if that worked you will get a RECOVERED mail within a minute. "
+                        "This is alert #{} -- they repeat every {:.0f} min until it comes back, "
+                        "so silence after this means the mail stopped working, not the "
+                        "radio.\n\nCheck the dongle:\n  bash /home/pi/Desktop/bt_diag.sh\n"
+                        "  dmesg -T | grep 0x2042 | tail\n\n{}\n".format(
+                            SCAN_HCI, quiet / 60.0, deaf_alerts, DEAF_REMIND / 60.0,
+                            datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
             visible = {}
 
             # Report the absent transition once. This is the same 5-minute test
