@@ -1,4 +1,6 @@
-sudo tee /etc/systemd/system/py_new.service > /dev/null <<EOF
+# Installed by setup.sh. This copy is the reference -- keep them in step.
+# sudo cp py_new.service /etc/systemd/system/ && sudo systemctl daemon-reload
+
 [Unit]
 Description=Scan Gopro Service
 After=network.target bluetooth.target
@@ -9,14 +11,22 @@ WorkingDirectory=/home/pi/Desktop
 EnvironmentFile=-/home/pi/Desktop/.env
 ExecStart=/usr/bin/python3 /home/pi/Desktop/py_new.py
 Restart=always
-RestartSec=10
+RestartSec=60
 StandardOutput=journal
 StandardError=journal
 
+# KillMode=mixed: SIGTERM goes to the main process only, not to every process
+# in the cgroup. The default (control-group) SIGTERMs bluepy-helper directly,
+# so it dies before the scanner can tell it to stop scanning -- and a raw HCI
+# scan that is never disabled latches the controller, which is what left hci1
+# deaf for six days. This gives the scanner's own handler time to win that race.
+KillMode=mixed
+TimeoutStopSec=15
+
+# And the belt to that pair of braces. This runs after the service has stopped,
+# however it stopped -- clean exit, crash, SIGKILL, watchdog, deploy restart --
+# when there is nothing left to race. A latched adapter cannot survive it.
+ExecStopPost=/home/pi/Desktop/bt_scan_reset.sh
+
 [Install]
 WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable py_new.service
-sudo systemctl start py_new.service

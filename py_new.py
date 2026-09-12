@@ -261,6 +261,12 @@ def reset_scan_adapter(why, mail=True):
             logging.error("hciconfig {} {} failed: {}".format(hci, action, e))
     time.sleep(1)
 
+    # The routine recovery reset passes mail=False and stops here. A reset that
+    # works is not news, and mailing every one of them is what makes alerts worth
+    # ignoring. Only the deaf alarm mails, once the resets have clearly failed.
+    if not mail:
+        return
+
     send_alert(
             "Planica Pi: reset {} - {}".format(hci, why),
             "The scanning adapter {} was reset (hciconfig down/up) on {}.\n\n"
@@ -273,6 +279,28 @@ def reset_scan_adapter(why, mail=True):
             "  dmesg -T | grep 0x2042 | tail\n".format(
                 hci, os.uname()[1], why,
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+def scan_refused_count(idx):
+    """How many times the kernel has logged this adapter refusing a scan.
+
+    This is what separates a broken radio from a quiet one. Hearing zero BLE
+    devices proves nothing on its own -- with every GoPro switched off and
+    nobody around, zero is the correct answer, and resetting the adapter or
+    mailing about it would be a false alarm.
+
+    A LATCHED controller is different and says so: every LE Set Extended Scan
+    Enable (opcode 0x2042) comes back Command Disallowed, which the kernel logs
+    as 'failed: -16'. So the test is not "did we hear nothing", it is "did we
+    hear nothing WHILE the kernel was refusing our scans". Returns None if
+    dmesg cannot be read, and the caller falls back to the time-based rule.
+    """
+    try:
+        out = subprocess.check_output(["dmesg"], stderr=subprocess.DEVNULL,
+                                      timeout=10).decode("utf-8", "ignore")
+    except Exception:
+        return None
+    return out.count("hci{}: Opcode 0x2042 failed".format(idx))
+
 
 def adapter_is_up(hci):
     """True if hciconfig reports the adapter UP RUNNING."""
@@ -326,6 +354,7 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     deaf_last_alert = 0.0          # last deaf email, so the reminders are paced
     deaf_alerts = 0                # how many reminders this episode
     last_reset = 0.0               # paces the silent recovery resets
+    last_refused = None            # kernel refusal count at the previous scan
 
     while True:
         try:
@@ -338,63 +367,85 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
             # Deaf-radio alarm. Logging and email only -- it never touches
             # last_seen, rssi_state or macs_to_process, so detection behaves
             # exactly as before whether this fires or not.
+            #
+            # Hearing nothing is NOT the signal. With every GoPro switched off
+            # and nobody around, zero devices is the correct answer and acting
+            # on it would be a false alarm. The signal is the kernel refusing
+            # our scans (scan_refused_count) while we hear nothing: that is a
+            # latched controller and nothing else looks like it.
+            refused = scan_refused_count(SCAN_HCI)
+            newly_refused = False
+            if refused is not None:
+                # Only a rising count means new refusals. dmesg wraps, so a
+                # falling count is the buffer rolling, not the radio.
+                if last_refused is not None and refused > last_refused:
+                    newly_refused = True
+                last_refused = refused
+
             if devices:
+                last_any_device = time.time()
                 if deaf_since is not None:
                     down = (time.time() - deaf_since) / 60.0
-                    logging.error("RADIO RECOVERED on hci{} after {:.0f}min deaf - {} BLE devices this scan".format(
+                    logging.error("RADIO RECOVERED on hci{} after {:.0f}min - {} BLE devices this scan".format(
                         SCAN_HCI, down, len(devices)))
-                    send_alert(
-                        "Planica Pi: radio RECOVERED on hci{}".format(SCAN_HCI),
-                        "hci{} is hearing again -- {} BLE devices in this scan, after "
-                        "{:.0f} minutes deaf.\n\nCameras can be triggered again.\n\n{}\n".format(
-                            SCAN_HCI, len(devices), down,
-                            datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                    # Only worth a mail if a deaf mail went out; a silent reset
+                    # that worked is not news.
+                    if deaf_alerts:
+                        send_alert(
+                            "Planica Pi: radio RECOVERED on hci{}".format(SCAN_HCI),
+                            "hci{} is hearing again -- {} BLE devices in this scan, after "
+                            "{:.0f} minutes latched.\n\nCameras can be triggered again.\n\n{}\n".format(
+                                SCAN_HCI, len(devices), down,
+                                datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
                     deaf_since = None
                     deaf_alerts = 0
-                last_any_device = time.time()
             else:
                 quiet = time.time() - last_any_device
+                # With no dmesg to ask, fall back to a long silence for the RESET
+                # only -- a reset is harmless. It never mails on that guess: a
+                # quiet night and a dead radio look identical without the kernel
+                # signal, and a false alarm is worse than a late one.
+                if refused is None:
+                    latched = quiet > RADIO_DEAF_AFTER
+                else:
+                    latched = newly_refused
 
-                # Fast, silent recovery. Retried on the same cadence for as
-                # long as it stays deaf.
-                if quiet > RADIO_QUIET_RESET and (time.time() - last_reset) > RADIO_QUIET_RESET:
-                    last_reset = time.time()
-                    logging.warning("hci{} heard nothing for {:.0f}s - resetting it".format(
-                        SCAN_HCI, quiet))
-                    reset_scan_adapter("no BLE device heard for {:.0f}s".format(quiet), mail=False)
-
-                # Repeat while it stays deaf. One alert per episode was the
-                # original design and it is wrong: if the reset does not fix it,
-                # a single email on the first day is followed by silence for as
-                # long as it stays broken -- which is the exact shape of the
-                # 2026-09-06 -> 09-12 outage this exists to prevent.
-                # deaf_since is None means this is the first alert of the episode:
-                # fire it the moment the threshold is crossed, then pace the rest.
-                # Gating the first one on DEAF_REMIND too would have worked only
-                # because the epoch is a big number -- a test with a small clock
-                # caught it.
-                first = deaf_since is None
-                if quiet > RADIO_DEAF_AFTER and (first or (time.time() - deaf_last_alert) > DEAF_REMIND):
+                if latched:
                     if deaf_since is None:
-                        deaf_since = last_any_device
-                    deaf_last_alert = time.time()
-                    deaf_alerts += 1
-                    logging.error("RADIO DEAF (alert #{}) - not one BLE device of any kind on hci{} for {:.0f}min. The scan is completing and returning nothing; the service looks healthy and no camera can ever be triggered.".format(
-                        deaf_alerts, SCAN_HCI, quiet / 60.0))
-                    send_alert(
-                        "Planica Pi: radio deaf on hci{} ({:.0f}min, alert #{})".format(
-                            SCAN_HCI, quiet / 60.0, deaf_alerts),
-                        "The scanner on hci{} has completed scans for {:.0f} minutes without "
-                        "hearing a single BLE device of any kind -- not a camera, not a phone, "
-                        "nothing.\n\nThe service is running and looks healthy in the log. No "
-                        "camera can be triggered in this state.\n\nThe adapter has just been "
-                        "reset; if that worked you will get a RECOVERED mail within a minute. "
-                        "This is alert #{} -- they repeat every {:.0f} min until it comes back, "
-                        "so silence after this means the mail stopped working, not the "
-                        "radio.\n\nCheck the dongle:\n  bash /home/pi/Desktop/bt_diag.sh\n"
-                        "  dmesg -T | grep 0x2042 | tail\n\n{}\n".format(
-                            SCAN_HCI, quiet / 60.0, deaf_alerts, DEAF_REMIND / 60.0,
-                            datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                        deaf_since = time.time()
+
+                    # Fast, silent recovery, retried on the same cadence for as
+                    # long as the kernel keeps refusing.
+                    if (time.time() - last_reset) > RADIO_QUIET_RESET:
+                        last_reset = time.time()
+                        logging.warning("hci{} latched - kernel refusing scans, nothing heard for {:.0f}s - resetting it".format(
+                            SCAN_HCI, quiet))
+                        reset_scan_adapter("kernel refusing scans, nothing heard for {:.0f}s".format(quiet), mail=False)
+
+                    # Mail only once the resets have clearly failed, then keep
+                    # saying so. One alert per episode meant one email on the
+                    # first day and silence for the rest of the outage.
+                    stuck = time.time() - deaf_since
+                    first = deaf_alerts == 0
+                    if stuck > RADIO_DEAF_AFTER and refused is not None and (first or (time.time() - deaf_last_alert) > DEAF_REMIND):
+                        deaf_last_alert = time.time()
+                        deaf_alerts += 1
+                        logging.error("RADIO DEAF (alert #{}) - hci{} latched for {:.0f}min and resets are not clearing it. No camera can be triggered.".format(
+                            deaf_alerts, SCAN_HCI, stuck / 60.0))
+                        send_alert(
+                            "Planica Pi: radio deaf on hci{} ({:.0f}min, alert #{})".format(
+                                SCAN_HCI, stuck / 60.0, deaf_alerts),
+                            "hci{} has been latched for {:.0f} minutes: the kernel is refusing "
+                            "every scan (Opcode 0x2042 failed: -16) and resetting the adapter "
+                            "every {}s is not clearing it.\n\nThe service is running and looks "
+                            "healthy. No camera can be triggered in this state.\n\nThis is "
+                            "alert #{} -- they repeat every {:.0f} min until it recovers, so "
+                            "silence after this means the mail stopped working, not the "
+                            "radio.\n\nOn the Pi:\n  bash /home/pi/Desktop/bt_diag.sh\n"
+                            "  dmesg -T | grep 0x2042 | tail\n  (unplug and replug the dongle)\n\n{}\n".format(
+                                SCAN_HCI, stuck / 60.0, RADIO_QUIET_RESET, deaf_alerts,
+                                DEAF_REMIND / 60.0,
+                                datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
             visible = {}
 

@@ -1,4 +1,5 @@
-#!/bin/bash
+
+chmod +x "$REPO_DIR/bt_scan_reset.sh" 2>/dev/null || true#!/bin/bash
 
 REPO_DIR="/home/pi/Desktop"
 SCRIPT="$REPO_DIR/py_new.py"
@@ -82,6 +83,19 @@ Restart=always
 RestartSec=60
 StandardOutput=journal
 StandardError=journal
+
+# KillMode=mixed: SIGTERM goes to the main process only, not to every process
+# in the cgroup. The default (control-group) SIGTERMs bluepy-helper directly,
+# so it dies before the scanner can tell it to stop scanning -- and a raw HCI
+# scan that is never disabled latches the controller, which is what left hci1
+# deaf for six days. This gives the scanner's own handler time to win that race.
+KillMode=mixed
+TimeoutStopSec=15
+
+# And the belt to that pair of braces. This runs after the service has stopped,
+# however it stopped -- clean exit, crash, SIGKILL, watchdog, deploy restart --
+# when there is nothing left to race. A latched adapter cannot survive it.
+ExecStopPost=$REPO_DIR/bt_scan_reset.sh
 
 [Install]
 WantedBy=multi-user.target

@@ -57,3 +57,19 @@ It was added at the repo root on 2026-09-07, where every Pi already had its own
 untracked copy — that name collision is what blocked `git pull` and caused the
 outage. Moving it to a path no Pi has lets a stuck Pi fast-forward on its own,
 without anyone opening an SSH session. Do not move it back to the root.
+
+## Never run a scan on the GATT radio
+
+`hci0` (onboard, cloned address) exists to make outbound connections to the
+cameras. Do not run `hcitool lescan`, `bluetoothctl scan on`, or anything else
+that scans on it. `hcitool lescan` enables scanning with a raw HCI command
+behind bluetoothd's back; Ctrl-C leaves it enabled; a scanning controller
+refuses outbound connections; every camera write then fails with
+`Connection refused`, and nothing at the BlueZ level shows why. That is exactly
+what happened on 2026-09-12 while diagnosing the dongle -- and it is the same
+latch that left the dongle itself deaf for six days.
+
+To see what a radio hears, observe it: `sudo timeout 20 btmon -i hci0`.
+btmon only listens. If hci0 is ever latched anyway:
+`sudo hciconfig hci0 down && sudo hciconfig hci0 up`, then confirm
+`hciconfig hci0 | grep "BD Address"` still shows `B8:27:EB:91:8B:A6`.
