@@ -27,6 +27,16 @@ GATT_ADDR = bt_adapters.address(GATT_HCI)
 # A scan takes ~4 s, so nothing completing for this long means wedged, not quiet.
 SCAN_STALE_AFTER = int(os.environ.get("BT_SCAN_STALE_AFTER", "120"))
 
+# A scan that completes and hears NOTHING is invisible to the watchdog above:
+# scan() returns, the heartbeat refreshes, systemd is happy, and the log reads
+# "scan alive - heard 0 of 14" forever. That is what a dead dongle looks like,
+# and it is indistinguishable in the log from a quiet night -- 2026-09-12, the
+# radio hearing zero BLE devices of any kind while the service reported itself
+# healthy. A BLE radio anywhere near people hears *something*, so hearing no
+# device at all -- not no camera, no device -- for this long means the radio is
+# deaf, and that is worth an email.
+RADIO_DEAF_AFTER = int(os.environ.get("BT_RADIO_DEAF_AFTER", "600"))
+
 # === GoPro BLE Busy Query ===
 class StdoutLogger(object):
     def write(self, data):
@@ -115,6 +125,21 @@ KNOWN_CAMERAS = [
 KNOWN_CAMERAS = [x.lower() for x in KNOWN_CAMERAS]
 CAMERA_MAP = {mac: i + 1 for i, mac in enumerate(KNOWN_CAMERAS)}
 
+# === Generic Alert Email ===
+def send_alert(subject, body):
+    msg = EmailMessage()
+    msg["From"] = EMAIL_FROM
+    msg["To"] = EMAIL_TO
+    msg["Subject"] = subject
+    msg.set_content(body)
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            server.login(EMAIL_FROM, SMTP_PASS)
+            server.send_message(msg)
+        logging.info("Sent alert: {}".format(subject))
+    except Exception as e:
+        logging.error("Failed to send alert '{}': {}".format(subject, e))
+
 # === Email Failure Alert ===
 def send_failure_email(camera_number):
     msg = EmailMessage()
@@ -196,6 +221,8 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     last_rssi = {}        # last RSSI that counted, for the ABSENT line
     absent_logged = set() # cameras already reported ABSENT this absence
     last_census = None    # rate limit for the "scan alive" line
+    last_any_device = time.time()  # any BLE device at all, camera or not
+    deaf_reported = False          # one email per deaf episode, not one a scan
 
     while True:
         try:
@@ -204,6 +231,27 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
             # Proof of life for the watchdog in the main controller. Only a
             # scan that actually returned refreshes this.
             heartbeat.value = time.time()
+
+            # Deaf-radio alarm. Logging and email only -- it never touches
+            # last_seen, rssi_state or macs_to_process, so detection behaves
+            # exactly as before whether this fires or not.
+            if devices:
+                if deaf_reported:
+                    logging.info("Radio hearing again - {} BLE devices this scan".format(len(devices)))
+                    deaf_reported = False
+                last_any_device = time.time()
+            elif not deaf_reported and (time.time() - last_any_device) > RADIO_DEAF_AFTER:
+                deaf_reported = True
+                mins = (time.time() - last_any_device) / 60.0
+                logging.error("RADIO DEAF - not one BLE device of any kind on hci{} for {:.0f}min. The scan is completing and returning nothing; the service looks healthy and no camera can ever be triggered.".format(SCAN_HCI, mins))
+                send_alert(
+                    "Planica Pi: Bluetooth radio deaf on hci{}".format(SCAN_HCI),
+                    "The scanner on hci{} has completed scans for {:.0f} minutes without "
+                    "hearing a single BLE device of any kind -- not a camera, not a phone, "
+                    "nothing.\n\nThe service is running and looks healthy in the log. No "
+                    "camera can be triggered in this state.\n\nCheck the dongle: "
+                    "bash /home/pi/Desktop/bt_diag.sh\n\n{}".format(
+                        SCAN_HCI, mins, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
             visible = {}
 
             # Report the absent transition once. This is the same 5-minute test
@@ -270,8 +318,8 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                 heard = ", ".join(
                     "cam{}={}".format(CAMERA_MAP.get(m, m), r)
                     for m, r in sorted(visible.items(), key=lambda kv: kv[1], reverse=True))
-                logging.info("scan alive - heard {} of {}: {}".format(
-                    len(visible), len(KNOWN_CAMERAS), heard or "none"))
+                logging.info("scan alive - heard {} of {} cameras, {} BLE devices total: {}".format(
+                    len(visible), len(KNOWN_CAMERAS), len(devices), heard or "none"))
         except Exception as e:
             logging.warning("Scan failed: {}".format(e))
 
