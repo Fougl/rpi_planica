@@ -11,6 +11,7 @@ from email.message import EmailMessage
 from bluepy.btle import Scanner
 import pexpect
 import sys
+import signal
 import bt_adapters
 
 # The UB500 on USB scans; the onboard radio does the GATT writes, so a write can
@@ -210,9 +211,52 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
         time.sleep(2)
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
+# === Scan Adapter Reset ===
+def reset_scan_adapter(why):
+    """Power-cycle the scanning adapter. Never touches the GATT adapter.
+
+    A process killed while a scan is enabled leaves the controller latched:
+    it answers every later LE Set Extended Scan Enable (opcode 0x2042) with
+    Command Disallowed, which the kernel logs as 'failed: -16' (EBUSY). bluepy
+    then asks, is refused, waits its 4 seconds and returns an empty list -- no
+    exception, no log line. The service looks perfectly healthy and hears
+    nothing, forever, because nothing in the system ever resets the adapter.
+    Observed on hci1 from 2026-09-06 to 2026-09-12: six days of
+    'scan alive - heard 0 of 14' with the cameras demonstrably powered on.
+
+    hciconfig down/up clears the latch. Doing it at every start means any kill,
+    crash or restart self-heals on the way back up instead of needing a person.
+    """
+    hci = "hci{}".format(SCAN_HCI)
+    logging.info("Resetting {} before scanning ({})".format(hci, why))
+    for action in ("down", "up"):
+        try:
+            subprocess.run(["hciconfig", hci, action], timeout=10, check=False)
+        except Exception as e:
+            logging.error("hciconfig {} {} failed: {}".format(hci, action, e))
+    time.sleep(1)
+
 # === Scanner Process ===
 def scanner_loop(macs_to_process, attempt_counter, heartbeat):
+    # Clear any scan the previous process left enabled on the controller.
+    reset_scan_adapter("startup")
     scanner = Scanner(SCAN_HCI)
+
+    # And do not create that state ourselves. The watchdog kills this process
+    # with SIGTERM mid-scan; without this the controller is left scanning with
+    # nobody collecting, which is exactly the latch described above.
+    def _clean_stop(signum, frame):
+        try:
+            scanner.stop()
+        except Exception:
+            pass
+        os._exit(0)
+    try:
+        signal.signal(signal.SIGTERM, _clean_stop)
+        signal.signal(signal.SIGINT, _clean_stop)
+    except Exception as e:
+        logging.warning("Could not install clean-stop handler: {}".format(e))
+
     last_seen = {}
     first_rssi = {}
     rssi_state = {}
@@ -244,6 +288,7 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                 deaf_reported = True
                 mins = (time.time() - last_any_device) / 60.0
                 logging.error("RADIO DEAF - not one BLE device of any kind on hci{} for {:.0f}min. The scan is completing and returning nothing; the service looks healthy and no camera can ever be triggered.".format(SCAN_HCI, mins))
+                reset_scan_adapter("radio went deaf - clearing a possible stuck scan")
                 send_alert(
                     "Planica Pi: Bluetooth radio deaf on hci{}".format(SCAN_HCI),
                     "The scanner on hci{} has completed scans for {:.0f} minutes without "
