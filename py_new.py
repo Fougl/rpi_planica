@@ -152,6 +152,16 @@ def send_alert(subject, body):
         except Exception as e:
             logging.error("Failed to send alert '{}': {}".format(subject, e))
 
+            # The hourly limit is claimed before sending, so a send that
+            # failed must give it back -- otherwise a wrong password or a
+            # dropped WiFi silences the next hour of alerts as well, which is
+            # exactly when they matter. Observed 2026-09-12: the reset mail
+            # died on 535 BadCredentials and the retry was suppressed.
+            try:
+                os.remove(RESET_MAIL_STAMP)
+            except Exception:
+                pass
+
     threading.Thread(target=_send, daemon=True).start()
 
 # === Email Failure Alert ===
