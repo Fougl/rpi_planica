@@ -2,3 +2,11 @@
 *.log
 /bin/
 .env
+
+# Generated on the Pi, never in git. Committing these was what broke
+# auto-deploy: every Pi that has run py_new.py has an untracked __pycache__,
+# so an incoming commit carrying one makes `git pull` abort, and deploy.sh
+# then restarted the service every 2 minutes forever (2026-09-07 -> 09-12).
+__pycache__/
+*.pyc
+last_strong.json

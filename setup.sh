@@ -96,17 +96,46 @@ echo "    Service installed and started."
 echo "[4/7] Creating deploy script..."
 cat > $DEPLOY_SCRIPT <<EOF
 #!/bin/bash
+# Auto-deploy, from cron every 2 minutes. Restarts the service ONLY when HEAD
+# actually moved.
+#
+# The old version restarted whenever HEAD != origin/master -- including when
+# the pull that was supposed to close that gap had just failed. That pull
+# fails on any Pi where an incoming commit adds a file the Pi already has
+# untracked, and commit 3e88a0f added __pycache__/*.pyc, which every Pi that
+# has ever run py_new.py has on disk. So: pull aborts, HEAD never moves,
+# restart runs anyway, every 2 minutes, forever. It ran that way from
+# 2026-09-07 17:44 to 2026-09-12 -- about 3400 restarts -- and nothing
+# reported it: systemd said active, deploy.log said "Deployed <same sha>" at
+# every attempt, and the service log looked healthy between restarts. No
+# camera fired in all that time, because the scanner's state lives in memory
+# and the 5-minute absence that re-arms a camera cannot elapse inside a
+# 2-minute process.
 cd $REPO_DIR || exit 1
-git fetch origin master
+LOG=/home/pi/deploy.log
 
-LOCAL=\$(git rev-parse HEAD)
-REMOTE=\$(git rev-parse origin/master)
+BEFORE=\$(git rev-parse HEAD)
 
-if [ "\$LOCAL" != "\$REMOTE" ]; then
-    git pull origin master
-    sudo systemctl restart $SERVICE_NAME
-    echo "\$(date): Deployed \$(git rev-parse --short HEAD)" >> /home/pi/deploy.log
+if ! git fetch origin master 2>/dev/null; then
+    echo "\$(date): fetch failed - no network? Service left alone." >> \$LOG
+    exit 1
 fi
+
+[ "\$BEFORE" = "\$(git rev-parse origin/master)" ] && exit 0
+
+# --ff-only: a local commit on the Pi has to fail loudly here. A plain pull
+# would make a merge commit, and HEAD would then differ from origin/master by
+# construction -- the same restart loop by another route.
+OUT=\$(git pull --ff-only origin master 2>&1)
+AFTER=\$(git rev-parse HEAD)
+
+if [ "\$BEFORE" = "\$AFTER" ]; then
+    echo "\$(date): PULL FAILED - still on \$(git rev-parse --short HEAD), NOT restarting: \$(echo "\$OUT" | tr '\n' ' ' | cut -c1-300)" >> \$LOG
+    exit 1
+fi
+
+sudo systemctl restart $SERVICE_NAME
+echo "\$(date): Deployed \$(git rev-parse --short HEAD)" >> \$LOG
 EOF
 chmod +x $DEPLOY_SCRIPT
 echo "    Deploy script created at $DEPLOY_SCRIPT."
