@@ -12,6 +12,7 @@ from bluepy.btle import Scanner
 import pexpect
 import sys
 import signal
+import threading
 import bt_adapters
 
 # The UB500 on USB scans; the onboard radio does the GATT writes, so a write can
@@ -128,18 +129,30 @@ CAMERA_MAP = {mac: i + 1 for i, mac in enumerate(KNOWN_CAMERAS)}
 
 # === Generic Alert Email ===
 def send_alert(subject, body):
-    msg = EmailMessage()
-    msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO
-    msg["Subject"] = subject
-    msg.set_content(body)
-    try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
-            server.login(EMAIL_FROM, SMTP_PASS)
-            server.send_message(msg)
-        logging.info("Sent alert: {}".format(subject))
-    except Exception as e:
-        logging.error("Failed to send alert '{}': {}".format(subject, e))
+    """Fire and forget. NEVER blocks the caller.
+
+    This is called from inside the scanner process, and smtplib with no timeout
+    can hang for minutes on a Pi whose WiFi has dropped -- which would stall the
+    scan loop, freeze last_seen, and have the watchdog restart the service. The
+    alert would then be causing the outage it exists to report. So it runs on a
+    daemon thread with a socket timeout, and the scan carries on regardless of
+    whether the mail ever leaves.
+    """
+    def _send():
+        msg = EmailMessage()
+        msg["From"] = EMAIL_FROM
+        msg["To"] = EMAIL_TO
+        msg["Subject"] = subject
+        msg.set_content(body)
+        try:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                server.login(EMAIL_FROM, SMTP_PASS)
+                server.send_message(msg)
+            logging.info("Sent alert: {}".format(subject))
+        except Exception as e:
+            logging.error("Failed to send alert '{}': {}".format(subject, e))
+
+    threading.Thread(target=_send, daemon=True).start()
 
 # === Email Failure Alert ===
 def send_failure_email(camera_number):
@@ -155,7 +168,7 @@ def send_failure_email(camera_number):
     )
 
     try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
             server.login(EMAIL_FROM, SMTP_PASS)
             server.send_message(msg)
         logging.info("Sent failure email for camera {}".format(camera_number))
@@ -211,6 +224,31 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
         time.sleep(2)
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
+# Every adapter reset is mailed, so a radio that keeps needing one is visible
+# instead of quietly self-healing forever. Rate limited by a timestamp file,
+# not a variable: each reset happens in a fresh process, so an in-memory limit
+# would not survive and a restart storm would mean one email per restart --
+# 3400 of them, in the case this was written for.
+RESET_MAIL_GAP = int(os.environ.get("BT_RESET_MAIL_GAP", "3600"))
+RESET_MAIL_STAMP = "/home/pi/.bt_reset_mail"
+
+
+def _reset_mail_allowed():
+    try:
+        with open(RESET_MAIL_STAMP) as handle:
+            last = float(handle.read().strip())
+    except Exception:
+        last = 0.0
+    if time.time() - last < RESET_MAIL_GAP:
+        return False
+    try:
+        with open(RESET_MAIL_STAMP, "w") as handle:
+            handle.write(str(time.time()))
+    except Exception as e:
+        logging.warning("Could not write {}: {}".format(RESET_MAIL_STAMP, e))
+    return True
+
+
 # === Scan Adapter Reset ===
 def reset_scan_adapter(why):
     """Power-cycle the scanning adapter. Never touches the GATT adapter.
@@ -235,6 +273,22 @@ def reset_scan_adapter(why):
         except Exception as e:
             logging.error("hciconfig {} {} failed: {}".format(hci, action, e))
     time.sleep(1)
+
+    if _reset_mail_allowed():
+        send_alert(
+            "Planica Pi: reset {} - {}".format(hci, why),
+            "The scanning adapter {} was reset (hciconfig down/up) on {}.\n\n"
+            "Reason: {}\n"
+            "Time:   {}\n\n"
+            "A reset at startup is routine after a restart. A reset for a deaf "
+            "radio, or several of these in a day, means the controller keeps "
+            "latching and the dongle needs looking at:\n\n"
+            "  bash /home/pi/Desktop/bt_diag.sh\n"
+            "  dmesg -T | grep 0x2042 | tail\n".format(
+                hci, os.uname()[1], why,
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    else:
+        logging.info("Reset email suppressed - one was sent less than {}s ago".format(RESET_MAIL_GAP))
 
 # === Scanner Process ===
 def scanner_loop(macs_to_process, attempt_counter, heartbeat):
