@@ -156,16 +156,6 @@ def send_alert(subject, body):
         except Exception as e:
             logging.error("Failed to send alert '{}': {}".format(subject, e))
 
-            # The hourly limit is claimed before sending, so a send that
-            # failed must give it back -- otherwise a wrong password or a
-            # dropped WiFi silences the next hour of alerts as well, which is
-            # exactly when they matter. Observed 2026-09-12: the reset mail
-            # died on 535 BadCredentials and the retry was suppressed.
-            try:
-                os.remove(RESET_MAIL_STAMP)
-            except Exception:
-                pass
-
     threading.Thread(target=_send, daemon=True).start()
 
 # === Email Failure Alert ===
@@ -238,31 +228,6 @@ def run_gatttool(mac, macs_to_process, attempt_counter):
         time.sleep(2)
     logging.info("Finished bluetoothctl disconnect for {}".format(mac))
 
-# Every adapter reset is mailed, so a radio that keeps needing one is visible
-# instead of quietly self-healing forever. Rate limited by a timestamp file,
-# not a variable: each reset happens in a fresh process, so an in-memory limit
-# would not survive and a restart storm would mean one email per restart --
-# 3400 of them, in the case this was written for.
-RESET_MAIL_GAP = int(os.environ.get("BT_RESET_MAIL_GAP", "3600"))
-RESET_MAIL_STAMP = "/home/pi/.bt_reset_mail"
-
-
-def _reset_mail_allowed():
-    try:
-        with open(RESET_MAIL_STAMP) as handle:
-            last = float(handle.read().strip())
-    except Exception:
-        last = 0.0
-    if time.time() - last < RESET_MAIL_GAP:
-        return False
-    try:
-        with open(RESET_MAIL_STAMP, "w") as handle:
-            handle.write(str(time.time()))
-    except Exception as e:
-        logging.warning("Could not write {}: {}".format(RESET_MAIL_STAMP, e))
-    return True
-
-
 # === Scan Adapter Reset ===
 def reset_scan_adapter(why):
     """Power-cycle the scanning adapter. Never touches the GATT adapter.
@@ -288,8 +253,7 @@ def reset_scan_adapter(why):
             logging.error("hciconfig {} {} failed: {}".format(hci, action, e))
     time.sleep(1)
 
-    if _reset_mail_allowed():
-        send_alert(
+    send_alert(
             "Planica Pi: reset {} - {}".format(hci, why),
             "The scanning adapter {} was reset (hciconfig down/up) on {}.\n\n"
             "Reason: {}\n"
@@ -301,13 +265,30 @@ def reset_scan_adapter(why):
             "  dmesg -T | grep 0x2042 | tail\n".format(
                 hci, os.uname()[1], why,
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-    else:
-        logging.info("Reset email suppressed - one was sent less than {}s ago".format(RESET_MAIL_GAP))
+
+def adapter_is_up(hci):
+    """True if hciconfig reports the adapter UP RUNNING."""
+    try:
+        out = subprocess.check_output(["hciconfig", hci],
+                                      stderr=subprocess.STDOUT).decode("utf-8", "ignore")
+    except Exception as e:
+        logging.error("hciconfig {} failed: {}".format(hci, e))
+        return False
+    return "UP RUNNING" in out
+
 
 # === Scanner Process ===
 def scanner_loop(macs_to_process, attempt_counter, heartbeat):
-    # Clear any scan the previous process left enabled on the controller.
-    reset_scan_adapter("startup")
+    # Only touch the radio if it is actually down. Resetting a working adapter
+    # at every start is noise, and it would mail on every restart. A controller
+    # latched with a stuck scan still reports UP RUNNING, so that case is caught
+    # by the deaf alarm below instead -- by the radio hearing nothing, which is
+    # the symptom that actually matters.
+    _hci = "hci{}".format(SCAN_HCI)
+    if adapter_is_up(_hci):
+        logging.info("{} is UP RUNNING - leaving it alone".format(_hci))
+    else:
+        reset_scan_adapter("{} was not UP RUNNING at startup".format(_hci))
     scanner = Scanner(SCAN_HCI)
 
     # And do not create that state ourselves. The watchdog kills this process
@@ -332,7 +313,6 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     # Logging only -- none of these feed the state machine below.
     last_rssi = {}        # last RSSI that counted, for the ABSENT line
     absent_logged = set() # cameras already reported ABSENT this absence
-    last_census = None    # rate limit for the "scan alive" line
     last_any_device = time.time()  # any BLE device at all, camera or not
     deaf_since = None              # when this deaf episode started, None if hearing
     deaf_last_alert = 0.0          # last deaf email, so the reminders are paced
@@ -455,18 +435,6 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
 
                 last_seen[mac] = now
 
-            # Once a minute, say what the radio can actually hear. Without this
-            # a healthy-but-quiet scanner and a wedged one are indistinguishable
-            # in the log -- the state machine only writes on transitions, so a
-            # dead scan and a day where nothing moved look identical. The RSSIs
-            # here are the RSSIs the radio is actually reporting.
-            if last_census is None or (now - last_census).total_seconds() >= 60:
-                last_census = now
-                heard = ", ".join(
-                    "cam{}={}".format(CAMERA_MAP.get(m, m), r)
-                    for m, r in sorted(visible.items(), key=lambda kv: kv[1], reverse=True))
-                logging.info("scan alive - heard {} of {} cameras, {} BLE devices total: {}".format(
-                    len(visible), len(KNOWN_CAMERAS), len(devices), heard or "none"))
         except Exception as e:
             logging.warning("Scan failed: {}".format(e))
 
