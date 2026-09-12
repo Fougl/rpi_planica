@@ -2,7 +2,7 @@
 
 REPO_DIR="/home/pi/Desktop"
 SCRIPT="$REPO_DIR/py_new.py"
-DEPLOY_SCRIPT="/home/pi/deploy.sh"
+DEPLOY_SCRIPT="$REPO_DIR/deploy.sh"
 SERVICE_NAME="py_new.service"
 
 echo "=== Setting up py_new service and auto-deploy ==="
@@ -92,58 +92,16 @@ sudo systemctl enable $SERVICE_NAME
 sudo systemctl restart $SERVICE_NAME
 echo "    Service installed and started."
 
-# 4. Create deploy script
-echo "[4/7] Creating deploy script..."
-cat > $DEPLOY_SCRIPT <<EOF
-#!/bin/bash
-# Auto-deploy, from cron every 2 minutes.
-#
-# The Pi is a MIRROR of origin/master. It is not a place to edit code.
-#
-# `git pull` is deliberately NOT used here. Pull refuses to overwrite an
-# untracked file or a local edit, and aborts the whole update when it hits
-# one -- and that refusal caused the 2026-09-07 -> 2026-09-12 outage. A commit
-# added __pycache__/*.pyc, which every Pi already has on disk because Python
-# writes it the first time py_new.py runs. The pull aborted, HEAD never moved,
-# and the old deploy.sh restarted the service anyway: every 2 minutes for five
-# days, ~3400 times, no camera firing, no error logged anywhere. systemd said
-# active and deploy.log said "Deployed <same sha>" at every attempt.
-#
-# `git fetch` + `git reset --hard` cannot fail that way. Whatever is on the Pi
-# is replaced by whatever is on GitHub, untracked collisions included, so no
-# future push can wedge a Pi no matter what it contains. Anything that must
-# survive a deploy -- .env, new_log.log, last_strong.json -- is in .gitignore,
-# and reset does not touch ignored files.
-#
-# The trade, on purpose: edits made directly on the Pi are destroyed at the
-# next deploy. Change code in git, not on the Pi.
-cd $REPO_DIR || exit 1
-LOG=/home/pi/deploy.log
-
-BEFORE=\$(git rev-parse HEAD)
-
-if ! git fetch -q origin master 2>/dev/null; then
-    echo "\$(date): fetch failed - no network? Service left alone." >> \$LOG
-    exit 1
-fi
-
-TARGET=\$(git rev-parse origin/master)
-[ "\$BEFORE" = "\$TARGET" ] && exit 0
-
-if ! git reset -q --hard "\$TARGET" 2>> \$LOG; then
-    echo "\$(date): RESET FAILED - still on \$(git rev-parse --short HEAD), NOT restarting" >> \$LOG
-    exit 1
-fi
-
-# Restart only if HEAD actually moved. The old script restarted whenever it
-# thought it was behind, without ever checking the update had worked.
-[ "\$(git rev-parse HEAD)" = "\$BEFORE" ] && exit 0
-
-sudo systemctl restart $SERVICE_NAME
-echo "\$(date): Deployed \$(git rev-parse --short HEAD)" >> \$LOG
-EOF
-chmod +x $DEPLOY_SCRIPT
-echo "    Deploy script created at $DEPLOY_SCRIPT."
+# 4. Deploy script now lives in the repo (deploy.sh) so that a push can update
+# the deploy logic itself. It used to be generated here into /home/pi/deploy.sh,
+# which made it the one file auto-deploy could never update: every change to it
+# needed someone to SSH in and re-run this script. Any old generated copy is
+# removed so cron cannot keep running it.
+echo "[4/7] Using the repo's deploy.sh..."
+chmod +x "$REPO_DIR/deploy.sh"
+rm -f /home/pi/deploy.sh
+DEPLOY_SCRIPT="$REPO_DIR/deploy.sh"
+echo "    Deploy script: $DEPLOY_SCRIPT (tracked in git, updates itself)."
 
 # 5. Sudoers entry so pi can restart service and reboot without password
 echo "[5/7] Configuring sudoers..."
