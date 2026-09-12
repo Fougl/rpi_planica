@@ -50,3 +50,10 @@ cd /home/pi/Desktop && git log --oneline -1
 
 `deploy.log` writing a line every 2 minutes means something is wrong, whatever
 it says.
+
+## Why `install_gatttool.sh` lives in `tools/`
+
+It was added at the repo root on 2026-09-07, where every Pi already had its own
+untracked copy — that name collision is what blocked `git pull` and caused the
+outage. Moving it to a path no Pi has lets a stuck Pi fast-forward on its own,
+without anyone opening an SSH session. Do not move it back to the root.
