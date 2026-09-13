@@ -299,25 +299,32 @@ def reset_scan_adapter(why, mail=True):
                 hci, os.uname()[1], why,
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
-def capture_deaf_snapshot(idx):
+def capture_deaf_snapshot(idx, urb_history=None, scan_once=None):
     """Dump what the radio looks like RIGHT NOW, before anything resets it.
 
     2026-09-13 could not be explained after the fact. By the time anyone looked,
     the reset had cleared whatever was stuck, and the kernel ring buffer had been
     flushed by unrelated spam. So: capture first, reset second, leave a file.
 
-    The measurement that decides it is urbnum, sampled twice. Reports of this
-    exact dongle dying the same way (BlueZ issue 1500 -- TP-Link UB500 on a Pi,
-    "after a day or two it detects only BR/EDR") come alongside reports of the
-    interrupt URBs dying on RTL8761B. Those are two different faults wearing the
-    same symptom, and they need different cures:
+    What decides it is the URB rate. Reports of this exact dongle dying the same
+    way (BlueZ issue 1500 -- TP-Link UB500 on a Pi, "after a day or two it
+    detects only BR/EDR") come alongside reports of the interrupt URBs dying on
+    RTL8761B. Two different faults wearing one symptom, needing different cures:
 
-        urbnum still climbing, zero advertisements -> the controller is latched,
-            the USB link is healthy, and hciconfig down/up is the right fix;
-        urbnum frozen -> the USB side is dead, and only re-enumeration
-            (unbind/bind, or a physical replug) will bring it back.
+        urbnum climbing while scanning, zero advertisements -> the controller is
+            latched, the USB link is healthy, hciconfig down/up is the fix;
+        urbnum flat while scanning -> the USB side is dead, and only
+            re-enumeration (unbind/bind, or a replug) will bring it back.
 
-    Nothing else tells them apart, and neither survives a reset.
+    Both measurements have to be taken WHILE A SCAN IS RUNNING, and that is the
+    trap the first version fell into: this function runs inside the scan loop, so
+    nothing is scanning while it works. Sampling urbnum here read "frozen" on a
+    radio whose USB link was fine, and btmon recorded a radio nobody was asking
+    to scan -- zero advertisements, which says nothing at all. Measured
+    2026-09-13 18:36; it nearly cost a working dongle.
+
+    So urbnum comes from `urb_history`, which the loop fills after each completed
+    scan, and btmon is run across one real scan via `scan_once`.
     """
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     path = "/home/pi/diag/deaf-{}.txt".format(stamp)
@@ -340,30 +347,67 @@ def capture_deaf_snapshot(idx):
         except Exception as run_error:
             return "({} failed: {})\n".format(" ".join(cmd), run_error)
 
-    urbnum = "/sys/bus/usb/devices/1-1/urbnum"
-    try:
-        with open(urbnum) as handle:
-            urb_first = handle.read().strip()
-        time.sleep(1)
-        with open(urbnum) as handle:
-            urb_second = handle.read().strip()
-    except Exception as urb_error:
-        urb_first = urb_second = "unreadable ({})".format(urb_error)
+    # The URB rate across the loop's own samples, taken while scans were running.
+    urb_lines = []
+    previous = None
+    for when, value in list(urb_history or []):
+        if previous is not None and when > previous[0]:
+            seconds = when - previous[0]
+            delta = value - previous[1]
+            urb_lines.append("  {}  urbnum {}  (+{} in {:.1f}s = {:.1f}/s)".format(
+                datetime.fromtimestamp(when).strftime('%H:%M:%S'),
+                value, delta, seconds, delta / seconds))
+        previous = (when, value)
+    if not urb_lines:
+        urb_lines.append("  (no history yet -- the loop had not completed two scans)")
+
+    # btmon only records something if a scan is actually in flight, and this
+    # function runs inside the loop that would otherwise be scanning. So drive
+    # one real scan through it rather than watching an idle radio.
+    btmon_text = "(no scan callable was passed, so there was nothing to observe)\n"
+    if scan_once is not None:
+        heard = "not run"
+        monitor = None
+        try:
+            monitor = subprocess.Popen(["btmon", "-i", str(idx)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            time.sleep(0.5)
+            try:
+                found = scan_once()
+                heard = len(found) if found is not None else 0
+            except Exception as scan_error:
+                heard = "scan raised: {}".format(scan_error)
+            time.sleep(0.5)
+            monitor.terminate()
+            btmon_text = monitor.communicate(timeout=10)[0].decode("utf-8", "ignore")
+        except Exception as monitor_error:
+            btmon_text = "(btmon failed: {})\n".format(monitor_error)
+            if monitor is not None:
+                try:
+                    monitor.kill()
+                except Exception:
+                    pass
+        lines = btmon_text.splitlines()
+        if len(lines) > 400:
+            btmon_text = "\n".join(lines[:400]) + "\n(truncated)\n"
+        btmon_text = "that scan returned {} devices\n\n".format(heard) + btmon_text
 
     try:
         with open(path, "w") as out:
-            out.write("deaf snapshot {} -- hci{}\n".format(stamp, idx))
-            out.write("urbnum: {} -> {} over 1s\n".format(urb_first, urb_second))
-            out.write("  climbing = USB alive, controller latched (down/up cures it)\n")
-            out.write("  frozen   = USB side dead (needs re-enumeration or a replug)\n\n")
+            out.write("deaf snapshot {} -- hci{}\n\n".format(stamp, idx))
+            out.write("urbnum, sampled by the loop after each completed scan:\n")
+            out.write("\n".join(urb_lines) + "\n")
+            out.write("  climbing while scanning = USB alive, controller latched"
+                      " -> down/up cures it\n")
+            out.write("  flat while scanning     = USB side dead"
+                      " -> needs re-enumeration or a replug\n")
+            out.write("  (readings taken while nothing is scanning mean nothing)\n\n")
             out.write("== hciconfig -a ==\n" + run(["hciconfig", "-a"]))
-            out.write("\n== btmgmt info ==\n" + run(["btmgmt", "--index", str(idx), "info"]))
+            out.write("\n== btmgmt info ==\n"
+                      + run(["timeout", "8", "btmgmt", "--index", str(idx), "info"]))
             out.write("\n== lsusb ==\n" + run(["lsusb"]))
-            out.write("\n== btmon 6s (advertisements here mean it is NOT deaf) ==\n"
-                      # btmon -i takes a NUMBER, not a name: "-i hci1" is
-                      # rejected outright, which is the other half of why this
-                      # section came back empty.
-                      + run(["timeout", "6", "btmon", "-i", str(idx)], timeout=15))
+            out.write("\n== btmon across one real scan"
+                      " (advertisements here mean it is NOT deaf) ==\n" + btmon_text)
             out.write("\n== dmesg tail ==\n"
                       + "\n".join(run(["dmesg", "-T"]).splitlines()[-40:]) + "\n")
         logging.error("deaf snapshot written to {}".format(path))
@@ -449,6 +493,7 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     last_reset = 0.0               # paces the silent recovery resets
     last_refused = None            # kernel refusal count at the previous scan
     silent_backoff = RADIO_SILENT_RESET  # grows while silence persists, reset on a sighting
+    urb_history = []               # (when, urbnum) after each completed scan, last 10
 
     while True:
         try:
@@ -457,6 +502,18 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
             # Proof of life for the watchdog in the main controller. Only a
             # scan that actually returned refreshes this.
             heartbeat.value = time.time()
+
+            # Sample urbnum right after a scan completes, so a snapshot can show
+            # the URB rate DURING scanning. That rate is the only thing that
+            # tells a dead USB link apart from a latched controller, and it
+            # cannot be measured from inside the snapshot, which runs with this
+            # loop stopped.
+            try:
+                with open("/sys/bus/usb/devices/1-1/urbnum") as urb_handle:
+                    urb_history.append((time.time(), int(urb_handle.read().strip())))
+                del urb_history[:-10]
+            except Exception:
+                pass
 
             # Deaf-radio alarm. Logging and email only -- it never touches
             # last_seen, rssi_state or macs_to_process, so detection behaves
@@ -521,7 +578,8 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                         # reset is what destroys the evidence, which is exactly
                         # why no episode so far has been explainable afterwards.
                         # One file per episode, written the moment it starts.
-                        capture_deaf_snapshot(SCAN_HCI)
+                        capture_deaf_snapshot(SCAN_HCI, urb_history,
+                                              lambda: scanner.scan(4))
 
                     # A confirmed latch is retried fast and on a fixed cadence:
                     # the kernel is telling us it is broken, so there is nothing

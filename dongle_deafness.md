@@ -103,7 +103,18 @@ ls -t /home/pi/diag/          # deaf-<timestamp>.txt, one per episode
 head -n 8 /home/pi/diag/deaf-*.txt
 ```
 
-**`urbnum`, sampled twice one second apart, is the measurement that decides it:**
+**Read the first snapshot with care — the instrument was wrong at first.** The
+2026-09-13 18:36 snapshot reported `urbnum: 2258361 -> 2258361 over 1s` (frozen)
+and zero advertisements, and **both readings were artefacts**. The snapshot runs
+inside the scan loop, so nothing is scanning while it works: `btmon` was watching
+a radio nobody had asked to scan, and `urbnum` was sampled on an idle USB link,
+where a flat count is the healthy answer. That nearly sent someone to replace a
+working dongle. Fixed the same evening — `urbnum` now comes from samples the loop
+takes after each completed scan, and `btmon` runs across one real scan. Snapshots
+from 18:36 on 2026-09-13 are the only affected ones; ignore their `urbnum` and
+`btmon` sections.
+
+**The URB rate while scanning is the measurement that decides it:**
 
 | urbnum | Meaning | Cure |
 |---|---|---|
