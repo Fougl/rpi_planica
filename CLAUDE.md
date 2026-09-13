@@ -1,9 +1,23 @@
 # Rules for working in this repo
 
-**Every push here deploys to a live Pi within 2 minutes.** `/home/pi/deploy.sh`
-runs from cron every 2 minutes, pulls `master` and restarts `py_new.service`.
-There is no staging and no review step. A bad push reaches the cameras at
-Planica immediately, and a Pi that cannot pull cannot be fixed by pushing again.
+**Every push here deploys to a live Pi within 2 minutes.** `deploy.sh` in this
+repo runs from cron every 2 minutes: it fetches `master`, `git reset --hard`s to
+it, installs `py_new.service` into `/etc/systemd/system` when the repo copy
+differs, and restarts the service. There is no staging and no review step. A bad
+push reaches the cameras at Planica immediately.
+
+Until 2026-09-13, cron ran a generated `/home/pi/deploy.sh` that used `git pull`
+and never installed the unit file. Both of those cost real outages — see below
+and `dongle_deafness.md`. The old script is parked as
+`/home/pi/deploy.sh.superseded`.
+
+## The dongle goes deaf — start here
+
+`dongle_deafness.md` is the standing record for the scanning radio losing its
+hearing: what is proven, what is not, the external reports on this exact dongle,
+and where the next episode writes its own evidence (`/home/pi/diag/`). **The root
+cause is still open.** Read it before theorising, and before changing anything
+about scanning, adapter resets, or the unit file.
 
 ## Never bulk-commit untracked files here
 
@@ -29,6 +43,10 @@ Anything generated on the Pi — `__pycache__/`, `*.pyc`, `*.log`, `.env`,
 `last_strong.json` — belongs in `.gitignore`, never in a commit.
 
 ## Recovering a Pi that has stopped updating
+
+Since 2026-09-13 the deploy uses `git fetch` + `git reset --hard`, which no
+untracked collision or local edit can block the way `git pull` could. This should
+not happen again. Kept because it did, for five days:
 
 A stuck Pi cannot pull the fix; it has to be cleared by hand, on the Pi:
 
