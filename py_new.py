@@ -327,9 +327,16 @@ def capture_deaf_snapshot(idx):
         pass
 
     def run(cmd, timeout=12):
+        # Tolerate a non-zero exit on purpose. `timeout 6 btmon` always exits
+        # 124 when the timeout fires, and check_output raises on that -- so the
+        # single most important section of this file, the radio traffic, came
+        # back as an error string the first time this ran, on a radio that was
+        # demonstrably hearing. Here a non-zero exit is the normal case; only a
+        # real exception is worth writing down.
         try:
-            return subprocess.check_output(cmd, stderr=subprocess.STDOUT,
-                                           timeout=timeout).decode("utf-8", "ignore")
+            done = subprocess.run(cmd, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, timeout=timeout)
+            return done.stdout.decode("utf-8", "ignore")
         except Exception as run_error:
             return "({} failed: {})\n".format(" ".join(cmd), run_error)
 
@@ -353,7 +360,10 @@ def capture_deaf_snapshot(idx):
             out.write("\n== btmgmt info ==\n" + run(["btmgmt", "--index", str(idx), "info"]))
             out.write("\n== lsusb ==\n" + run(["lsusb"]))
             out.write("\n== btmon 6s (advertisements here mean it is NOT deaf) ==\n"
-                      + run(["timeout", "6", "btmon", "-i", "hci{}".format(idx)], timeout=15))
+                      # btmon -i takes a NUMBER, not a name: "-i hci1" is
+                      # rejected outright, which is the other half of why this
+                      # section came back empty.
+                      + run(["timeout", "6", "btmon", "-i", str(idx)], timeout=15))
             out.write("\n== dmesg tail ==\n"
                       + "\n".join(run(["dmesg", "-T"]).splitlines()[-40:]) + "\n")
         logging.error("deaf snapshot written to {}".format(path))
