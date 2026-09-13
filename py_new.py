@@ -54,6 +54,14 @@ RADIO_QUIET_RESET = int(os.environ.get("BT_RADIO_QUIET_RESET", "10"))
 # mail still waits for proof that a reset is what brought the radio back.
 RADIO_SILENT_RESET = int(os.environ.get("BT_RADIO_SILENT_RESET", "60"))
 
+# ...but back off after each one, up to this. A closed site at 3am genuinely
+# hears nothing for hours and is indistinguishable from a dead radio, so a fixed
+# 60s cadence would power-cycle the dongle some 500 times a night -- churn on the
+# exact hardware that keeps failing, to fix a radio that is working perfectly.
+# Doubling keeps the fast recovery where it matters (the first reset still comes
+# after 60s of silence) and costs about 20 resets overnight instead.
+RADIO_SILENT_RESET_MAX = int(os.environ.get("BT_RADIO_SILENT_RESET_MAX", "900"))
+
 # Mailing is the expensive part, so that waits until the reset has clearly
 # failed to fix it.
 RADIO_DEAF_AFTER = int(os.environ.get("BT_RADIO_DEAF_AFTER", "300"))
@@ -291,6 +299,70 @@ def reset_scan_adapter(why, mail=True):
                 hci, os.uname()[1], why,
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
+def capture_deaf_snapshot(idx):
+    """Dump what the radio looks like RIGHT NOW, before anything resets it.
+
+    2026-09-13 could not be explained after the fact. By the time anyone looked,
+    the reset had cleared whatever was stuck, and the kernel ring buffer had been
+    flushed by unrelated spam. So: capture first, reset second, leave a file.
+
+    The measurement that decides it is urbnum, sampled twice. Reports of this
+    exact dongle dying the same way (BlueZ issue 1500 -- TP-Link UB500 on a Pi,
+    "after a day or two it detects only BR/EDR") come alongside reports of the
+    interrupt URBs dying on RTL8761B. Those are two different faults wearing the
+    same symptom, and they need different cures:
+
+        urbnum still climbing, zero advertisements -> the controller is latched,
+            the USB link is healthy, and hciconfig down/up is the right fix;
+        urbnum frozen -> the USB side is dead, and only re-enumeration
+            (unbind/bind, or a physical replug) will bring it back.
+
+    Nothing else tells them apart, and neither survives a reset.
+    """
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    path = "/home/pi/diag/deaf-{}.txt".format(stamp)
+    try:
+        os.makedirs("/home/pi/diag")
+    except OSError:
+        pass
+
+    def run(cmd, timeout=12):
+        try:
+            return subprocess.check_output(cmd, stderr=subprocess.STDOUT,
+                                           timeout=timeout).decode("utf-8", "ignore")
+        except Exception as run_error:
+            return "({} failed: {})\n".format(" ".join(cmd), run_error)
+
+    urbnum = "/sys/bus/usb/devices/1-1/urbnum"
+    try:
+        with open(urbnum) as handle:
+            urb_first = handle.read().strip()
+        time.sleep(1)
+        with open(urbnum) as handle:
+            urb_second = handle.read().strip()
+    except Exception as urb_error:
+        urb_first = urb_second = "unreadable ({})".format(urb_error)
+
+    try:
+        with open(path, "w") as out:
+            out.write("deaf snapshot {} -- hci{}\n".format(stamp, idx))
+            out.write("urbnum: {} -> {} over 1s\n".format(urb_first, urb_second))
+            out.write("  climbing = USB alive, controller latched (down/up cures it)\n")
+            out.write("  frozen   = USB side dead (needs re-enumeration or a replug)\n\n")
+            out.write("== hciconfig -a ==\n" + run(["hciconfig", "-a"]))
+            out.write("\n== btmgmt info ==\n" + run(["btmgmt", "--index", str(idx), "info"]))
+            out.write("\n== lsusb ==\n" + run(["lsusb"]))
+            out.write("\n== btmon 6s (advertisements here mean it is NOT deaf) ==\n"
+                      + run(["timeout", "6", "btmon", "-i", "hci{}".format(idx)], timeout=15))
+            out.write("\n== dmesg tail ==\n"
+                      + "\n".join(run(["dmesg", "-T"]).splitlines()[-40:]) + "\n")
+        logging.error("deaf snapshot written to {}".format(path))
+        return path
+    except Exception as write_error:
+        logging.error("could not write the deaf snapshot: {}".format(write_error))
+        return None
+
+
 def scan_refused_count(idx):
     """How many times the kernel has logged this adapter refusing a scan.
 
@@ -366,6 +438,7 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     deaf_alerts = 0                # how many reminders this episode
     last_reset = 0.0               # paces the silent recovery resets
     last_refused = None            # kernel refusal count at the previous scan
+    silent_backoff = RADIO_SILENT_RESET  # grows while silence persists, reset on a sighting
 
     while True:
         try:
@@ -395,6 +468,10 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
 
             if devices:
                 last_any_device = time.time()
+                # Anything heard means the next silence starts from the short
+                # cadence again, however long the last quiet spell had stretched
+                # the interval.
+                silent_backoff = RADIO_SILENT_RESET
                 if deaf_since is not None:
                     down = (time.time() - deaf_since) / 60.0
                     logging.error("RADIO RECOVERED on hci{} after {:.0f}min - {} BLE devices this scan".format(
@@ -430,19 +507,29 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                 if latched:
                     if deaf_since is None:
                         deaf_since = time.time()
+                        # Capture before the first reset of this episode. The
+                        # reset is what destroys the evidence, which is exactly
+                        # why no episode so far has been explainable afterwards.
+                        # One file per episode, written the moment it starts.
+                        capture_deaf_snapshot(SCAN_HCI)
 
-                    # A confirmed latch is retried fast. A bare silence is
-                    # retried on the slower cadence: every quiet night reaches
-                    # this path, and resetting every 10s until dawn is churn
-                    # and log noise for nothing.
-                    pace = RADIO_QUIET_RESET if newly_refused else RADIO_SILENT_RESET
+                    # A confirmed latch is retried fast and on a fixed cadence:
+                    # the kernel is telling us it is broken, so there is nothing
+                    # to be tentative about. A bare silence backs off instead,
+                    # because a quiet night lands here too and cannot be told
+                    # apart -- see RADIO_SILENT_RESET_MAX.
+                    pace = RADIO_QUIET_RESET if newly_refused else silent_backoff
                     if (time.time() - last_reset) > pace:
                         last_reset = time.time()
                         if newly_refused:
                             why = "kernel refusing scans, nothing heard for {:.0f}s".format(quiet)
+                            next_in = RADIO_QUIET_RESET
                         else:
                             why = "nothing heard at all for {:.0f}s".format(quiet)
-                        logging.warning("hci{} looks latched - {} - resetting it".format(SCAN_HCI, why))
+                            silent_backoff = min(silent_backoff * 2, RADIO_SILENT_RESET_MAX)
+                            next_in = silent_backoff
+                        logging.warning("hci{} looks latched - {} - resetting it (next check in {:.0f}s)".format(
+                            SCAN_HCI, why, next_in))
                         reset_scan_adapter(why, mail=False)
 
                     # Mail only once the resets have clearly failed, then keep
@@ -458,15 +545,22 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                         send_alert(
                             "Planica Pi: radio deaf on hci{} ({:.0f}min, alert #{})".format(
                                 SCAN_HCI, stuck / 60.0, deaf_alerts),
-                            "hci{} has been latched for {:.0f} minutes: the kernel is refusing "
-                            "every scan (Opcode 0x2042 failed: -16) and resetting the adapter "
-                            "every {}s is not clearing it.\n\nThe service is running and looks "
-                            "healthy. No camera can be triggered in this state.\n\nThis is "
-                            "alert #{} -- they repeat every {:.0f} min until it recovers, so "
+                            "hci{} has heard nothing for {:.0f} minutes and resetting the "
+                            "adapter is not clearing it.\n\nThe fault comes in two shapes. "
+                            "Either the kernel refuses every scan (Opcode 0x2042 failed: -16, "
+                            "visible in dmesg), or every command returns Success and not one "
+                            "advertisement arrives -- that second one leaves no trace anywhere "
+                            "and is what happened on 2026-09-13.\n\nThe service is running and "
+                            "looks healthy. No camera can be triggered in this state.\n\nThis "
+                            "is alert #{} -- they repeat every {:.0f} min until it recovers, so "
                             "silence after this means the mail stopped working, not the "
-                            "radio.\n\nOn the Pi:\n  bash /home/pi/Desktop/bt_diag.sh\n"
-                            "  dmesg -T | grep 0x2042 | tail\n  (unplug and replug the dongle)\n\n{}\n".format(
-                                SCAN_HCI, stuck / 60.0, RADIO_QUIET_RESET, deaf_alerts,
+                            "radio.\n\nA snapshot was written when this episode began:\n"
+                            "  ls -t /home/pi/diag/ | head\n\nRead urbnum at the top of it: "
+                            "climbing means the controller latched and down/up should cure it; "
+                            "frozen means the USB side died and it needs re-enumeration or a "
+                            "replug.\n\nAlso:\n  bash /home/pi/Desktop/bt_diag.sh\n"
+                            "  journalctl -t bt_scan_reset | tail\n\n{}\n".format(
+                                SCAN_HCI, stuck / 60.0, deaf_alerts,
                                 DEAF_REMIND / 60.0,
                                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
