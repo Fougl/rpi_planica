@@ -46,4 +46,12 @@ fi
 
 hciconfig "hci$IDX" down 2>/dev/null
 hciconfig "hci$IDX" up   2>/dev/null
+
+# And say so in the journal. Silence here is what made this impossible to check:
+# systemd logs an ExecStopPost only when it FAILS, so a guard that works leaves
+# no trace at all. On 2026-09-13 the only way to establish that it had ever run
+# was to stop the service and read the exec record out of `systemctl show`. One
+# line per stop makes "was the adapter cleared?" answerable from
+# `journalctl -u py_new` by anyone, at any time, after the fact.
+logger -t bt_scan_reset "cleared scan state on hci$IDX (down/up) after py_new stopped"
 exit 0

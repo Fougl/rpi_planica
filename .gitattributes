@@ -1,0 +1,10 @@
+# The Pi runs everything in here. A shell script with CRLF line endings does not
+# run on it at all -- bash stops at `main() {\r` with a syntax error -- and the
+# one that matters most is deploy.sh, which cron runs every 2 minutes: ship it
+# with CRLF once and the Pi stops updating for good, silently, exactly the
+# failure mode this repo keeps being bitten by.
+#
+# core.autocrlf is a per-machine git setting, so it protects only the machine
+# that happens to have it set. This file protects the repository instead: LF in
+# the tree and LF in every checkout, Windows included.
+* text=auto eol=lf

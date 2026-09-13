@@ -62,6 +62,23 @@ main() {
     # thought it was behind, without ever checking that the update had worked.
     [ "$(git rev-parse HEAD)" = "$before" ] && return 0
 
+    # Install the unit too, when the repo's copy differs from the live one.
+    # Without this a push can change the Python but never how systemd runs it,
+    # and that gap is not hypothetical: the unit carrying KillMode=mixed and the
+    # ExecStopPost that clears a latched scan adapter landed in git on
+    # 2026-09-12 (623e866) and was still not installed on 2026-09-13, because
+    # installing it needed a person to SSH in and re-run setup.sh. On the
+    # morning of the 13th the dongle sat deaf for 49 minutes after a restart --
+    # from exactly the latch that uninstalled unit prevents.
+    if ! cmp -s "$repo_dir/$service" "/etc/systemd/system/$service"; then
+        if sudo install -m 0644 "$repo_dir/$service" "/etc/systemd/system/$service"; then
+            sudo systemctl daemon-reload
+            echo "$(date): Installed updated $service" >> "$log"
+        else
+            echo "$(date): UNIT INSTALL FAILED - still running the old $service" >> "$log"
+        fi
+    fi
+
     sudo systemctl restart "$service"
     echo "$(date): Deployed $(git rev-parse --short HEAD)" >> "$log"
 }
