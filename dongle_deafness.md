@@ -183,6 +183,41 @@ service, so it remains **open**.
 
 A natural episode with the snapshot in place may answer it first, and for free.
 
+## The standing theory, and the change made for it (2026-09-13 evening)
+
+Two facts pushed the theory away from "a restart triggers it":
+
+- The **18:35 episode followed no restart.** The last one was at 16:43, an hour
+  and fifty-one minutes earlier. And it was not a quiet sky either: the reset
+  produced 12 devices immediately, so they were there and unheard.
+- The public reports describe the same thing — BlueZ issue 1500 has this dongle
+  going bad "after a day or two", with no restart involved.
+
+What the dongle *was* getting was churn. `bluepy`'s `scan()` enables scanning,
+disables it, and kills its helper on **every** call: at a 4-second cadence that
+is about **20,000 scan teardowns and 20,000 helper processes a day**, on
+firmware that is known to be fragile. Hours of that, then it wedges.
+
+So the scan is now **opened once and held open** — `start()` once, then
+`process()`/`getDevices()` per cycle. Roughly 20,000 teardowns a day become one.
+
+**This is a hypothesis, not a proven cure.** If the wedge is in the Realtek
+firmware and unrelated to churn, it will keep happening and the episodes will
+keep being logged. What makes it worth doing is that it is the first theory with
+a mechanism under our control.
+
+Measured before changing anything (`tools/scan_continuous_test.py`): a scan held
+open for three minutes reported 9-12 devices in **every** 30-second window, so
+the controller's duplicate filter does not suppress repeats and the camera logic
+still sees fresh RSSI each cycle.
+
+Verified after, by inducing the fault — `hciconfig hci1 down` under the running
+loop: helper death detected, scan reopened, silence detected at 12s, snapshot
+written, adapter reset, scan reopened, `RADIO RECOVERED - 10 BLE devices`, all
+within **19 seconds** and unattended. The reset path matters most: with a
+held-open scan there is no next `scan()` call to re-enable scanning, so a
+mistake there would leave the radio deaf permanently rather than briefly.
+
 ## Open questions
 
 1. Latched scan, duplicate-filter cache, or dying USB? (`urbnum` decides.)

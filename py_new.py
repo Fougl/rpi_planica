@@ -52,19 +52,31 @@ RADIO_QUIET_RESET = int(os.environ.get("BT_RADIO_QUIET_RESET", "10"))
 # shape, so silence on its own now resets the radio too. A quiet night reaches
 # this path as well, which is why that reset stays silent and paced, and why the
 # mail still waits for proof that a reset is what brought the radio back.
-RADIO_SILENT_RESET = int(os.environ.get("BT_RADIO_SILENT_RESET", "60"))
+# A scan takes ~4.2s, so this is "one empty scan and act". During opening hours
+# a radio that hears nothing for five seconds is far more likely to be latched
+# than to be sitting in a genuinely empty valley, and every second spent waiting
+# is a second a rider's camera is not triggered.
+RADIO_SILENT_RESET = int(os.environ.get("BT_RADIO_SILENT_RESET", "5"))
 
-# ...but back off after each one, up to this. A closed site at 3am genuinely
-# hears nothing for hours and is indistinguishable from a dead radio, so a fixed
-# 60s cadence would power-cycle the dongle some 500 times a night -- churn on the
-# exact hardware that keeps failing, to fix a radio that is working perfectly.
-# Doubling keeps the fast recovery where it matters (the first reset still comes
-# after 60s of silence) and costs about 20 resets overnight instead.
+# ...but back off after each one, up to this. A quiet hour inside opening time
+# still reaches this path -- a closed Monday, a lull between groups -- and
+# resetting every 5s through it is pure churn on the hardware that already
+# fails too often. Doubling keeps the fast first reset where it matters.
 RADIO_SILENT_RESET_MAX = int(os.environ.get("BT_RADIO_SILENT_RESET_MAX", "900"))
 
 # Mailing is the expensive part, so that waits until the reset has clearly
 # failed to fix it.
 RADIO_DEAF_AFTER = int(os.environ.get("BT_RADIO_DEAF_AFTER", "300"))
+
+# A silence this long, cured by a reset, is worth an email even though it fixed
+# itself. 2026-09-13 18:35 was deaf for 63s, recovered, and sent nothing --
+# because the old rule waited for RADIO_DEAF_AFTER first, so the very first
+# episode the detector ever caught was invisible to the person who asked to be
+# told. Shorter gaps stay quiet; they are usually just a lull.
+RECOVERY_MAIL_AFTER = int(os.environ.get("BT_RECOVERY_MAIL_AFTER", "30"))
+
+# ...and space those out, so a bad afternoon cannot fill the mailbox.
+RECOVERY_MAIL_GAP = int(os.environ.get("BT_RECOVERY_MAIL_GAP", "1800"))
 
 # And keep saying so. A single alert per episode means one email on the first
 # day and silence for the rest of the outage.
@@ -464,6 +476,50 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
         reset_scan_adapter("{} was not UP RUNNING at startup".format(_hci))
     scanner = Scanner(SCAN_HCI)
 
+    def open_scan(why):
+        """Open ONE continuous scan, replacing whatever was running.
+
+        bluepy's scan() enables scanning, disables it, and kills its helper on
+        every call. At a 4s cycle that is about 20,000 teardowns and 20,000
+        helper processes a day, on a controller whose firmware is known to be
+        fragile -- and the deaf episodes arrive after hours of it, with no
+        restart involved (2026-09-13 18:35, 1h51m after the last one). So the
+        scan is opened once and kept open, and this is the only place that
+        rebuilds it.
+
+        Measured before changing anything: one scan held open for 3 minutes kept
+        reporting 9-12 devices in every 30s window, so the controller's duplicate
+        filter does not suppress repeats and the camera logic still sees fresh
+        RSSI every cycle.
+        """
+        nonlocal scanner
+        try:
+            scanner.stop()
+        except Exception:
+            pass
+        try:
+            scanner = Scanner(SCAN_HCI)
+            scanner.start()
+            logging.info("continuous scan opened on hci{} ({})".format(SCAN_HCI, why))
+            return True
+        except Exception as open_error:
+            logging.error("could not open the scan: {} ({}) - leaving it to the watchdog".format(
+                open_error, why))
+            return False
+
+    def snapshot_scan():
+        """One window of the already-running scan, for the deaf snapshot.
+
+        Deliberately not scanner.scan(): that would enable and then DISABLE
+        scanning, tearing down the continuous scan in the middle of the very
+        episode being diagnosed.
+        """
+        scanner.clear()
+        scanner.process(4)
+        return scanner.getDevices()
+
+    open_scan("startup")
+
     # And do not create that state ourselves. The watchdog kills this process
     # with SIGTERM mid-scan; without this the controller is left scanning with
     # nobody collecting, which is exactly the latch described above.
@@ -494,10 +550,19 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
     last_refused = None            # kernel refusal count at the previous scan
     silent_backoff = RADIO_SILENT_RESET  # grows while silence persists, reset on a sighting
     urb_history = []               # (when, urbnum) after each completed scan, last 10
+    last_recovery_mail = 0.0       # spaces out the "went deaf and recovered" mails
 
     while True:
         try:
-            devices = scanner.scan(4)
+            # One scan, held open. clear() empties bluepy's own list so that
+            # getDevices() returns what THIS window heard -- without it the list
+            # accumulates, and a radio that had gone completely deaf would keep
+            # handing back the cameras it saw an hour ago. Every watchdog in this
+            # file would then report the system healthy while no camera fires,
+            # which is precisely the failure this file exists to prevent.
+            scanner.clear()
+            scanner.process(4)
+            devices = scanner.getDevices()
             now = datetime.now()
             # Proof of life for the watchdog in the main controller. Only a
             # scan that actually returned refreshes this.
@@ -544,19 +609,33 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                     logging.error("RADIO RECOVERED on hci{} after {:.0f}min - {} BLE devices this scan".format(
                         SCAN_HCI, down, len(devices)))
                     # Worth a mail in two cases: a deaf alert already went out,
-                    # or a long silence ended in the scan straight after a reset.
-                    # That second sequence is the proof a quiet night cannot
-                    # produce, because a reset conjures no advertisers out of
-                    # empty air -- and without it the silent latch gets fixed and
-                    # never reported, so nobody learns the dongle keeps doing it.
-                    fixed_by_reset = ((time.time() - last_reset) < 12
-                                      and (time.time() - deaf_since) > RADIO_DEAF_AFTER)
-                    if deaf_alerts or fixed_by_reset:
+                    # or a silence long enough to matter ended in the scan right
+                    # after a reset. That second sequence is the proof a quiet
+                    # spell cannot produce, because a reset conjures no
+                    # advertisers out of empty air.
+                    #
+                    # It has to be reported even though it fixed itself. On
+                    # 2026-09-13 the detector caught its first real episode --
+                    # 63s deaf, cured by the reset -- and sent nothing, because
+                    # the rule then waited for RADIO_DEAF_AFTER. The one person
+                    # who had asked to be told heard nothing at all. Hence
+                    # RECOVERY_MAIL_AFTER, and RECOVERY_MAIL_GAP so a bad
+                    # afternoon cannot turn that into a flood.
+                    cured = ((time.time() - last_reset) < 12
+                             and (time.time() - deaf_since) > RECOVERY_MAIL_AFTER
+                             and (time.time() - last_recovery_mail) > RECOVERY_MAIL_GAP)
+                    if deaf_alerts or cured:
+                        last_recovery_mail = time.time()
                         send_alert(
-                            "Planica Pi: radio RECOVERED on hci{}".format(SCAN_HCI),
-                            "hci{} is hearing again -- {} BLE devices in this scan, after "
-                            "{:.0f} minutes latched.\n\nCameras can be triggered again.\n\n{}\n".format(
-                                SCAN_HCI, len(devices), down,
+                            "Planica Pi: radio went deaf and recovered on hci{}".format(SCAN_HCI),
+                            "hci{} heard nothing for {:.0f} seconds, was reset, and is "
+                            "hearing again -- {} BLE devices in the scan straight after.\n\n"
+                            "It fixed itself, so nothing needs doing right now. It is worth "
+                            "knowing how often this happens: every episode writes a file "
+                            "under /home/pi/diag/, and the resets are in\n"
+                            "  journalctl -t bt_scan_reset\n\n"
+                            "Cameras can be triggered again.\n\n{}\n".format(
+                                SCAN_HCI, down * 60.0, len(devices),
                                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
                     deaf_since = None
                     deaf_alerts = 0
@@ -569,6 +648,9 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                 # a one-second hciconfig down/up that costs nothing when the
                 # suspicion is wrong, and when it is right it is the difference
                 # between a 49-minute outage and a 60-second one.
+                # Silence is a suspicion, not proof -- a genuinely quiet spell
+                # looks identical -- so it resets and then backs off. A kernel
+                # refusal is proof, and keeps the fast fixed cadence.
                 latched = newly_refused or quiet > RADIO_SILENT_RESET
 
                 if latched:
@@ -578,8 +660,7 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                         # reset is what destroys the evidence, which is exactly
                         # why no episode so far has been explainable afterwards.
                         # One file per episode, written the moment it starts.
-                        capture_deaf_snapshot(SCAN_HCI, urb_history,
-                                              lambda: scanner.scan(4))
+                        capture_deaf_snapshot(SCAN_HCI, urb_history, snapshot_scan)
 
                     # A confirmed latch is retried fast and on a fixed cadence:
                     # the kernel is telling us it is broken, so there is nothing
@@ -599,13 +680,20 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                         logging.warning("hci{} looks latched - {} - resetting it (next check in {:.0f}s)".format(
                             SCAN_HCI, why, next_in))
                         reset_scan_adapter(why, mail=False)
+                        # hciconfig down/up destroys the controller's scan, and
+                        # with a single long-lived scan there is no next scan()
+                        # call to enable it again. Without this line the FIRST
+                        # reset would leave the radio deaf permanently -- a cure
+                        # considerably worse than the disease.
+                        open_scan("after resetting the adapter")
 
                     # Mail only once the resets have clearly failed, then keep
                     # saying so. One alert per episode meant one email on the
                     # first day and silence for the rest of the outage.
                     stuck = time.time() - deaf_since
                     first = deaf_alerts == 0
-                    if stuck > RADIO_DEAF_AFTER and refused is not None and (first or (time.time() - deaf_last_alert) > DEAF_REMIND):
+                    if (stuck > RADIO_DEAF_AFTER
+                            and (first or (time.time() - deaf_last_alert) > DEAF_REMIND)):
                         deaf_last_alert = time.time()
                         deaf_alerts += 1
                         logging.error("RADIO DEAF (alert #{}) - hci{} latched for {:.0f}min and resets are not clearing it. No camera can be triggered.".format(
@@ -707,16 +795,8 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
             # scan" warning is transient and must not churn the helper.
             text = str(e)
             if "Broken pipe" in text or "Helper not started" in text:
-                logging.warning("scan helper is gone - rebuilding the scanner")
-                try:
-                    scanner.stop()
-                except Exception:
-                    pass
-                try:
-                    scanner = Scanner(SCAN_HCI)
-                except Exception as rebuild_error:
-                    logging.error("Could not rebuild the scanner: {} - leaving it to the watchdog".format(
-                        rebuild_error))
+                logging.warning("scan helper is gone - reopening the scan")
+                open_scan("helper died")
 
 # === Main Controller ===
 if __name__ == '__main__':
