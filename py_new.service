@@ -11,7 +11,13 @@ WorkingDirectory=/home/pi/Desktop
 EnvironmentFile=-/home/pi/Desktop/.env
 ExecStart=/usr/bin/python3 /home/pi/Desktop/py_new.py
 Restart=always
-RestartSec=60
+# 10s, not 60. Nothing is scanning during this gap, so it is dead time added to
+# whatever already went wrong: the stale-scan watchdog can take 120s to notice a
+# wedged scanner, and a minute of RestartSec on top means ~3 minutes with no
+# camera heard. Measured 2026-09-13, killing bluepy-helper by hand: the watchdog
+# exited at 14:02:47 and nothing scanned again until the restart. systemd's
+# default start limit (5 starts / 10s) is not at risk at this spacing.
+RestartSec=10
 StandardOutput=journal
 StandardError=journal
 

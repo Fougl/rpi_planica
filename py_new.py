@@ -527,7 +527,34 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                 last_seen[mac] = now
 
         except Exception as e:
+            # Never spin here. bluepy raises instantly, and forever, once its
+            # helper is gone: killing bluepy-helper by hand on 2026-09-13 put
+            # this loop into a tight cycle that burned 7 minutes of CPU in 84
+            # seconds of wall time and flooded the journal fast enough to rotate
+            # older entries away -- including the evidence of earlier resets --
+            # until the stale-scan watchdog finally restarted the service.
             logging.warning("Scan failed: {}".format(e))
+            time.sleep(2)
+
+            # A dead helper is never replaced by the Scanner that owned it, so
+            # every later scan() raises against the same corpse and only the
+            # watchdog can end it -- 120s of staleness plus RestartSec, with
+            # nothing heard throughout. A fresh Scanner spawns a fresh helper,
+            # so recover here instead and leave the watchdog as the backstop.
+            # Only for that failure: the routine "Address type changed during
+            # scan" warning is transient and must not churn the helper.
+            text = str(e)
+            if "Broken pipe" in text or "Helper not started" in text:
+                logging.warning("scan helper is gone - rebuilding the scanner")
+                try:
+                    scanner.stop()
+                except Exception:
+                    pass
+                try:
+                    scanner = Scanner(SCAN_HCI)
+                except Exception as rebuild_error:
+                    logging.error("Could not rebuild the scanner: {} - leaving it to the watchdog".format(
+                        rebuild_error))
 
 # === Main Controller ===
 if __name__ == '__main__':
