@@ -26,7 +26,12 @@ TimeoutStopSec=15
 # And the belt to that pair of braces. This runs after the service has stopped,
 # however it stopped -- clean exit, crash, SIGKILL, watchdog, deploy restart --
 # when there is nothing left to race. A latched adapter cannot survive it.
-ExecStopPost=/home/pi/Desktop/bt_scan_reset.sh
+#
+# Invoked through bash on purpose. systemd requires the exec bit on an
+# ExecStopPost program and fails the stop with 203/EXEC without it, so a
+# checkout that loses the mode -- Windows, an archive, a stray chmod -- would
+# quietly take the only guard against the latch with it.
+ExecStopPost=/bin/bash /home/pi/Desktop/bt_scan_reset.sh
 
 [Install]
 WantedBy=multi-user.target

@@ -43,6 +43,17 @@ SCAN_STALE_AFTER = int(os.environ.get("BT_SCAN_STALE_AFTER", "120"))
 # and a log line, so there is no reason to wait longer than that.
 RADIO_QUIET_RESET = int(os.environ.get("BT_RADIO_QUIET_RESET", "10"))
 
+# The same latch has a second shape, and that one leaves no trace anywhere:
+# every mgmt command comes back Success, LE Set Extended Scan Enable is
+# accepted, and not one advertisement ever arrives. 2026-09-13: hci1 silent for
+# 49 minutes after a restart while btmon showed seven clean scan cycles and zero
+# reports, no kernel message at all -- and hciconfig down/up brought back 221
+# reports in the next 20 seconds. The kernel-refusal test below cannot see that
+# shape, so silence on its own now resets the radio too. A quiet night reaches
+# this path as well, which is why that reset stays silent and paced, and why the
+# mail still waits for proof that a reset is what brought the radio back.
+RADIO_SILENT_RESET = int(os.environ.get("BT_RADIO_SILENT_RESET", "60"))
+
 # Mailing is the expensive part, so that waits until the reset has clearly
 # failed to fix it.
 RADIO_DEAF_AFTER = int(os.environ.get("BT_RADIO_DEAF_AFTER", "300"))
@@ -388,9 +399,15 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                     down = (time.time() - deaf_since) / 60.0
                     logging.error("RADIO RECOVERED on hci{} after {:.0f}min - {} BLE devices this scan".format(
                         SCAN_HCI, down, len(devices)))
-                    # Only worth a mail if a deaf mail went out; a silent reset
-                    # that worked is not news.
-                    if deaf_alerts:
+                    # Worth a mail in two cases: a deaf alert already went out,
+                    # or a long silence ended in the scan straight after a reset.
+                    # That second sequence is the proof a quiet night cannot
+                    # produce, because a reset conjures no advertisers out of
+                    # empty air -- and without it the silent latch gets fixed and
+                    # never reported, so nobody learns the dongle keeps doing it.
+                    fixed_by_reset = ((time.time() - last_reset) < 12
+                                      and (time.time() - deaf_since) > RADIO_DEAF_AFTER)
+                    if deaf_alerts or fixed_by_reset:
                         send_alert(
                             "Planica Pi: radio RECOVERED on hci{}".format(SCAN_HCI),
                             "hci{} is hearing again -- {} BLE devices in this scan, after "
@@ -401,26 +418,32 @@ def scanner_loop(macs_to_process, attempt_counter, heartbeat):
                     deaf_alerts = 0
             else:
                 quiet = time.time() - last_any_device
-                # With no dmesg to ask, fall back to a long silence for the RESET
-                # only -- a reset is harmless. It never mails on that guess: a
-                # quiet night and a dead radio look identical without the kernel
-                # signal, and a false alarm is worse than a late one.
-                if refused is None:
-                    latched = quiet > RADIO_DEAF_AFTER
-                else:
-                    latched = newly_refused
+                # Reset on either shape of the latch. The kernel refusing scans
+                # is proof and is acted on at once. Hearing nothing at all is
+                # only a suspicion, because a quiet night looks identical, so it
+                # waits RADIO_SILENT_RESET and then resets anyway: the reset is
+                # a one-second hciconfig down/up that costs nothing when the
+                # suspicion is wrong, and when it is right it is the difference
+                # between a 49-minute outage and a 60-second one.
+                latched = newly_refused or quiet > RADIO_SILENT_RESET
 
                 if latched:
                     if deaf_since is None:
                         deaf_since = time.time()
 
-                    # Fast, silent recovery, retried on the same cadence for as
-                    # long as the kernel keeps refusing.
-                    if (time.time() - last_reset) > RADIO_QUIET_RESET:
+                    # A confirmed latch is retried fast. A bare silence is
+                    # retried on the slower cadence: every quiet night reaches
+                    # this path, and resetting every 10s until dawn is churn
+                    # and log noise for nothing.
+                    pace = RADIO_QUIET_RESET if newly_refused else RADIO_SILENT_RESET
+                    if (time.time() - last_reset) > pace:
                         last_reset = time.time()
-                        logging.warning("hci{} latched - kernel refusing scans, nothing heard for {:.0f}s - resetting it".format(
-                            SCAN_HCI, quiet))
-                        reset_scan_adapter("kernel refusing scans, nothing heard for {:.0f}s".format(quiet), mail=False)
+                        if newly_refused:
+                            why = "kernel refusing scans, nothing heard for {:.0f}s".format(quiet)
+                        else:
+                            why = "nothing heard at all for {:.0f}s".format(quiet)
+                        logging.warning("hci{} looks latched - {} - resetting it".format(SCAN_HCI, why))
+                        reset_scan_adapter(why, mail=False)
 
                     # Mail only once the resets have clearly failed, then keep
                     # saying so. One alert per episode meant one email on the

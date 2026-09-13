@@ -1,5 +1,4 @@
-
-chmod +x "$REPO_DIR/bt_scan_reset.sh" 2>/dev/null || true#!/bin/bash
+#!/bin/bash
 
 REPO_DIR="/home/pi/Desktop"
 SCRIPT="$REPO_DIR/py_new.py"
@@ -69,6 +68,10 @@ fi
 
 # 3. Install systemd service
 echo "[3/7] Installing systemd service..."
+# ExecStopPost below is what clears a latched scan adapter after every stop, so
+# it has to be runnable: a checkout that dropped the exec bit disables it, and
+# systemd fails the stop with 203/EXEC instead of saying why.
+chmod +x "$REPO_DIR/bt_scan_reset.sh" 2>/dev/null || true
 sudo tee /etc/systemd/system/$SERVICE_NAME > /dev/null <<EOF
 [Unit]
 Description=Scan Gopro Service
@@ -95,7 +98,7 @@ TimeoutStopSec=15
 # And the belt to that pair of braces. This runs after the service has stopped,
 # however it stopped -- clean exit, crash, SIGKILL, watchdog, deploy restart --
 # when there is nothing left to race. A latched adapter cannot survive it.
-ExecStopPost=$REPO_DIR/bt_scan_reset.sh
+ExecStopPost=/bin/bash $REPO_DIR/bt_scan_reset.sh
 
 [Install]
 WantedBy=multi-user.target
